@@ -1,0 +1,17 @@
+{
+  "status": "pending_server_freeze",
+  "real_data_downloaded_locally": false,
+  "training": {"id": "SWE-bench/SWE-smith-trajectories", "split": "tool", "revision": null},
+  "validation": {"id": "SWE-bench/SWE-smith", "split": "train", "revision": null, "role": "heldout_main_validation", "selected_tasks": 30},
+  "transfer": {
+    "seed": 42,
+    "tasks_per_benchmark": 50,
+    "verified": {"id": "SWE-bench/SWE-bench_Verified", "split": "test", "revision": null},
+    "pro": {"id": "scaleapi/SWE-bench_Pro-os", "version": "public-v2", "revision": null},
+    "live": {"id": "SWE-bench-Live/SWE-bench-Live", "split": "full", "revision": null},
+    "terminal": {"id": "laude-institute/terminal-bench-2", "version": "2.0", "revision": null}
+  },
+  "model": {"id": "Qwen/Qwen3.8-27B", "revision": null},
+  "candidate_ids": null,
+  "checksums": null
+}

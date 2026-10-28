@@ -1,0 +1,9 @@
+# Exact direct package versions available during local CPU verification.
+# This is not a target-model/GPU compatibility claim or a transitive server lock.
+numpy==1.26.4
+PyYAML==6.0.1
+matplotlib==3.8.4
+scipy==1.13.1
+Pillow==10.3.0
+torch==2.5.1
+pytest==9.1.1

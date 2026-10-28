@@ -1,0 +1,6 @@
+# Resolve in a clean Linux environment AFTER inspecting the pinned model config.
+# Then save exact versions with scripts/lock_environment.py.
+-e .[server,dev]
+# Install official SWE-bench from the exact commit set in agent.swebench_revision:
+# python -m pip install 'git+https://github.com/SWE-bench/SWE-bench.git@<40-hex-commit>'
+# The direct_url.json commit must match; a floating PyPI package is insufficient.
