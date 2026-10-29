@@ -6,6 +6,8 @@
 
 当前数据角色以 TRANSFER.md 为准：训练来自 SWE-smith trajectories，主 30 题来自 SWE-smith 任务；Verified、Pro Public V2、Live Python full 与 Terminal-Bench 2.0 各持出 50 题。新增任务、依赖与缓存身份要求使用新存储/输出目录。服务器 Python 使用 3.12+。
 
+SWE-bench兼容基线为官方v4.1.0，解析其完整commit后安装；不使用5.x主分支。主环境约束swebench==4.1.0、ghapi<2，安装后主环境及Live独立环境执行pip check并检查实际官方接口。Git和Docker Compose也纳入预检。修改了该基线的旧配置/环境应使用新存储与配置目录重新准备，不改旧snapshot续用。
+
 ## 1. 安装依赖并生成本机配置
 
 在仓库根目录和独立 Python 环境中执行。Linux 需要 Git、Docker daemon、NVIDIA 驱动及可用 CUDA PyTorch。先用 `nvidia-smi -L` 查 UUID，再确认设备授权。以下目录和 GPU 是示例，须换成实际资源：

@@ -142,6 +142,13 @@ def prepare_smith_image(client, task: dict, base_image) -> tuple[str, str]:
         container.remove(force=True)
 
 
+def verified_image(task: dict) -> str:
+    from swebench.harness.test_spec.test_spec import make_test_spec
+
+    spec = make_test_spec(task, namespace="swebench")
+    return getattr(spec, "image", None) or getattr(spec, "instance_image_key", None)
+
+
 def prepare_environments(run: Run) -> None:
     """Preflight only. Failed images stop before rollout; no outcome-based replacement."""
     if run.cfg["mode"] != "real" or run.cfg["execution"] != "server":
@@ -158,11 +165,6 @@ def prepare_environments(run: Run) -> None:
         identity = official_identity(run.cfg)
         import docker
 
-        # Official SWE-bench changed module layout. Both paths refer to its public API.
-        try:
-            from swebench.harness.utils import make_test_spec
-        except ImportError:
-            from swebench.harness.test_spec.test_spec import make_test_spec
         client = docker.from_env()
         mapping, failures = {}, []
         tasks = read(run.root / "manifests/validation.json")
@@ -199,10 +201,7 @@ def prepare_environments(run: Run) -> None:
                         write(source, task)
                         image_name = live_info(run.cfg, source)["image"]
                     else:
-                        spec = make_test_spec(task)
-                        image_name = getattr(spec, "image", None) or getattr(
-                            spec, "instance_image_key", None
-                        )
+                        image_name = verified_image(task)
                     if not image_name:
                         raise ValueError(
                             "Installed official API exposes no task image name"

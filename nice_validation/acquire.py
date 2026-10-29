@@ -15,6 +15,10 @@ def hf_split(
     caches: dict,
     limit: int | None = None,
 ) -> dict:
+    if mode not in {"stream", "download"}:
+        raise ValueError("Acquisition mode must be stream or download")
+    if limit is not None and (type(limit) is not int or limit <= 0):
+        raise ValueError("Acquisition limit must be a positive integer or None")
     from huggingface_hub import HfApi, hf_hub_download
     from datasets import load_dataset
     from nice_validation.data import resumable_rows

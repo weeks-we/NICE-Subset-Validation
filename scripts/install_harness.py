@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from nice_validation.core import config, require_commit
 from nice_validation.environments import official_identity
 from nice_validation.model import server_only
+from nice_validation.compatibility import harness_api
 
 
 def main():
@@ -72,7 +73,10 @@ def main():
             ],
             check=True,
         )
+        subprocess.run([str(interpreter), "-m", "pip", "check"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "check"], check=True)
     print(official_identity(cfg))
+    print(harness_api(cfg))
 
 
 if __name__ == "__main__":

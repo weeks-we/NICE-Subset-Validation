@@ -65,6 +65,7 @@ def task_rate(records: list[dict], task_ids: list[str]) -> dict:
         for r in records
         if r.get("status") in {"RESOLVED", "TASK_FAILED"}
         and isinstance(r.get("resolved"), bool)
+        and r["status"] == ("RESOLVED" if r["resolved"] else "TASK_FAILED")
     ]
     complete = (
         bool(task_ids)

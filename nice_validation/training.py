@@ -88,7 +88,21 @@ def sft_steps(
             "Published checkpoints are not contiguous; preserve evidence and investigate"
         )
     if checkpoints:
+        for index, checkpoint in enumerate(checkpoints, 1):
+            metadata = read(checkpoint.with_suffix(".json"))
+            if (
+                metadata.get("identity") != identity
+                or metadata.get("step") != index
+                or metadata.get("sha256") != sha(checkpoint)
+            ):
+                raise ValueError(
+                    "Published checkpoint chain identity/step/checksum mismatch"
+                )
         saved = load_checkpoint(checkpoints[-1], identity)
+        if saved["step"] != len(checkpoints) or not 0 <= saved["step"] <= len(rows):
+            raise ValueError(
+                "Checkpoint optimizer boundary differs from the published step chain"
+            )
         if saved["order"] != order:
             raise ValueError("Checkpoint data order mismatch")
         for name, param in parameters:

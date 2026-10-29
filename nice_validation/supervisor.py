@@ -140,11 +140,11 @@ def start_service(root: Path, cfg: dict, service_file: Path, port: int):
         stdout=log,
         stderr=subprocess.STDOUT,
     )
-    write(
-        root / f"controller/service-{port}.json",
-        {"pid": process.pid, "config": str(service_file), "utc": utc()},
-    )
     try:
+        write(
+            root / f"controller/service-{port}.json",
+            {"pid": process.pid, "config": str(service_file), "utc": utc()},
+        )
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             if process.poll() is not None:

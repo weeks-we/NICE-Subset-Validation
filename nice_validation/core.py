@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import platform
 import re
@@ -106,6 +107,36 @@ def config(path: str | Path) -> dict:
             "Fixed research design requires 300/30/4/30 and seeds [11,22,33]"
         )
     tr = value["training"]
+    for section, keys in [
+        ("data", ["max_length"]),
+        (
+            "agent",
+            [
+                "max_actions",
+                "max_new_tokens",
+                "total_new_tokens",
+                "context_length",
+                "wall_seconds",
+                "tool_seconds",
+                "evaluation_timeout",
+            ],
+        ),
+        ("score", ["projection_dim"]),
+        ("experiment", ["budget_probes", "sample_attempts"]),
+    ]:
+        for key in keys:
+            number = value[section][key]
+            if type(number) is not int or number <= 0:
+                raise ValueError(f"{section}.{key} must be a positive integer")
+    for key in ["learning_rate", "epsilon", "max_grad_norm"]:
+        number = tr[key]
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, (float, int))
+            or not math.isfinite(number)
+            or number <= 0
+        ):
+            raise ValueError(f"training.{key} must be finite and positive")
     if exp["split_seed"] != 42 or exp["shuffle_seed"] != 2026:
         raise ValueError(
             "Fixed research design requires split_seed=42 and shuffle_seed=2026"

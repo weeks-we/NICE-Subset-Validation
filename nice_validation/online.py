@@ -16,6 +16,7 @@ from nice_validation.core import (
     write,
 )
 from nice_validation.model import server_only
+from nice_validation.compatibility import SWEBENCH_REF
 
 
 def resolve_sources(cfg: dict) -> dict:
@@ -36,7 +37,7 @@ def resolve_sources(cfg: dict) -> dict:
         require_commit(info.sha, kind + ".revision")
         result[kind] = {"id": identifier, "revision": info.sha}
     request = urllib.request.Request(
-        "https://api.github.com/repos/SWE-bench/SWE-bench/commits/main",
+        f"https://api.github.com/repos/SWE-bench/SWE-bench/commits/{SWEBENCH_REF}",
         headers={
             "Accept": "application/vnd.github+json",
             "User-Agent": "nice-validation",

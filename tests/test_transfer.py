@@ -71,6 +71,8 @@ def test_swesmith_main_tasks_are_held_out_from_corresponding_training_source(
             "repo": row["repo"],
             "problem_statement": row["messages"][0]["content"],
             "image_name": "synthetic-image",
+            "FAIL_TO_PASS": ["tests/test_fixture.py::test_fix"],
+            "PASS_TO_PASS": [],
         }
         for row in trajectories
     ]
@@ -382,6 +384,9 @@ def test_official_grader_dispatch_keeps_benchmarks_separate(
     assert (selected[0] == "/isolated/live/python") == (backend == "live")
     if backend == "live":
         assert "--namespace" in selected
+        assert selected[selected.index("--namespace") + 1] == "starryzhang"
+    elif backend == "swebench":
+        assert selected[selected.index("--namespace") + 1] == "swebench"
 
 
 def harbor_module(monkeypatch):

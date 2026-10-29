@@ -18,6 +18,7 @@ def native_job(
     adapter: Path,
     patch: Path | None = None,
     expected_images: dict | None = None,
+    expected_checkout: dict | None = None,
 ) -> dict:
     agent = {
         "import_path": "nice_validation.harbor_agent:NiceAgent",
@@ -36,6 +37,7 @@ def native_job(
             "patch_path": str(patch.resolve()),
             "patch_sha256": sha(patch),
             "expected_images": expected_images,
+            "expected_checkout": expected_checkout,
         }
     return {
         "job_name": "regrade" if patch is not None else "generation",
@@ -134,17 +136,35 @@ def native_episode(run: Run, task: dict, model_id: str, folder: Path) -> dict:
         if (agent_dir / "episode.json").is_file()
         else {}
     )
+    if not original.get("exception_info") and (
+        not episode
+        or not isinstance(episode.get("task_failure"), bool)
+        or not isinstance(episode.get("stop_reason"), str)
+    ):
+        raise InfraError("native_agent_episode_evidence_missing_or_invalid")
     raw_reward = first_reward
-    if task["benchmark"] == "pro" and not original.get("exception_info"):
+    pristine_regrade = False
+    if (
+        task["benchmark"] == "pro"
+        and not original.get("exception_info")
+        and not episode["task_failure"]
+    ):
         patch = agent_dir / "model.patch"
         if not patch.is_file():
             raise InfraError("pro_patch_evidence_missing")
+        base_path = agent_dir / "patch_base.json"
+        if not base_path.is_file():
+            raise InfraError("pro_starting_checkout_evidence_missing")
+        checkout = read(base_path)
         execute(
-            native_job(task, jobs, runtime_config.resolve(), adapter, patch, proof),
+            native_job(
+                task, jobs, runtime_config.resolve(), adapter, patch, proof, checkout
+            ),
             "regrade-job.json",
         )
         regraded, _ = one_native_result(jobs / "regrade", task["instance_id"])
         raw_reward = reward(regraded)
+        pristine_regrade = True
     failed = episode.get("task_failure", False) or bool(original.get("exception_info"))
     effective = 0.0 if failed else raw_reward
     resolved = effective == 1.0
@@ -159,7 +179,7 @@ def native_episode(run: Run, task: dict, model_id: str, folder: Path) -> dict:
         "output_tokens": episode.get("output_tokens"),
         "wall_seconds": time.monotonic() - start,
         "benchmark": task["benchmark"],
-        "pristine_regrade": task["benchmark"] == "pro",
+        "pristine_regrade": pristine_regrade,
     }
 
 

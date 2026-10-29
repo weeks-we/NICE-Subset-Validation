@@ -13,9 +13,18 @@ from nice_validation.core import (
     sha,
     write,
 )
+from nice_validation.schemas import task_record
 
 
 SUITES = ("verified", "pro", "live", "terminal")
+
+
+def task_identities(row: dict) -> set[str]:
+    return {
+        value
+        for key in ["instance_id", "source_instance_id"]
+        if isinstance(value := row.get(key), str) and value
+    }
 
 
 def checkout(repository: str, revision: str, target: Path) -> Path:
@@ -236,6 +245,13 @@ def prepare_transfer(run: Run) -> None:
             }
         else:
             sources = source_rows(run.cfg)
+            sources = {
+                suite: [
+                    task_record(row, run.cfg["transfer"]["suites"][suite]["backend"])
+                    for row in rows
+                ]
+                for suite, rows in sources.items()
+            }
         tasks, report, seen_ids, seen_prompts = {}, {}, set(), set()
         for suite in SUITES:
             rows = sorted(sources[suite], key=lambda r: r["instance_id"])
@@ -246,7 +262,7 @@ def prepare_transfer(run: Run) -> None:
             eligible = [
                 r
                 for r in rows
-                if r["instance_id"] not in seen_ids
+                if not task_identities(r).intersection(seen_ids)
                 and " ".join(r["problem_statement"].casefold().split())
                 not in seen_prompts
             ]
@@ -265,7 +281,7 @@ def prepare_transfer(run: Run) -> None:
                 for row in chosen
             ]
             tasks[suite] = chosen
-            seen_ids.update(r["instance_id"] for r in chosen)
+            seen_ids.update(identity for r in chosen for identity in task_identities(r))
             seen_prompts.update(
                 " ".join(r["problem_statement"].casefold().split()) for r in chosen
             )

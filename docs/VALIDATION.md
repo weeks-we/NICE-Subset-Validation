@@ -1,5 +1,55 @@
 # 本地验证记录
 
+## 2026-10-28 最后五块严格复核
+
+按用户最后指定的五块重新展开：数据获取/目录、数据处理、训练/梯度、NICE、SFT/benchmark。发现并修复主任务与Pro按动态HEAD取差会漏掉Agent已commit修复，以及文本换行转换破坏CRLF补丁的真实判分问题。现固定任务起点SHA，主任务按bytes读取/保存补丁，Pro由Git写容器文件并通过Harbor download_file下载；Pro独立重判核对相同干净root/commit。Git仓库被模型破坏记任务失败，Docker故障仍记基础设施错误；pristine_regrade仅在实际执行重判时为true。另修复pad_token_id=0被or替换及非法下载limit/mode未提前拒绝。
+
+最终同一生产源码三轮完整回归均为229passed、0失败、0跳过；每轮包括4项实际模型接口与1项实际Parquet接口。真实样本66项复验通过；新mock/resume/bundle通过，3110合成episode、360合成更新，audit为111PASS、1预期mockWARN、0FAIL；9类彩色/灰度图布局和目视检查通过。black检查59文件、flake8 F/E9、compileall与git diff --check通过。真实原生Task/JobConfig/AgentFactory及Harbor上传/下载接口在已安装库中另行确认，未启动容器。
+
+新增真实Git回归覆盖已commit、暂存、新文件、二进制、含空格目录及LF/CRLF逐字节重放。实际Arrow/datasets/HF RepoFile测试通过项目hf_split导出与断点恢复；真实Verified原始Parquet也经过当前项目函数和实际datasets加载器导出前三条，与原始记录逐字段相等，外部传输在该项测试中替换，未伪称HF直连成功。本机Windows出现过datasets缓存锁路径过长，改用独立短缓存目录后通过；服务器handoff同步短存储根说明。
+
+实际官方模型接口测试新增generate→NICE backward，候选与主验证反传后检查基座梯度为None、评分参数不变；SFT仅更新LoRA，后续完整模型加载不等于全量训练。NICE公式、fresh Adam顺序、零奖励/固定分母、源码对照和数据隔离继续核对，研究设置未改。完整结果及五块分项说明位于Git忽略的 `runs/strict-final-review-20261028/五块最严格复核报告.md`、`final-verification.json`；旧证据保持不变。27B/H200/官方容器仍须服务器实测。
+
+## 2026-10-28 真实样本与官方模型接口补验
+
+以下为新验证，历史章节中的“未下载真实数据”只描述对应旧轮次。原始样本、第三方源码、临时环境与完整本地报告均在Git忽略的 `runs/real-interface-audit-20261028/`。
+
+取得训练轨迹、SWE-smith任务、Verified、Live各3条原始记录，以及Pro Public V2和Terminal-Bench2.0各1个原生任务；Terminal严格使用官方注册的89题与commit `69671fbaac6d67a7ef0dfec016cc38a64ef7a77c`。注册清单经Git blob SHA与GitHub元数据核对；任务文件逐个校验blob SHA。Verified完整Parquet通过源LFS SHA256检查；大分片只读取所需字节范围，Live结果又用真实HTTP范围读取复核，未用补造记录补齐实验数量。
+
+真实记录专项 **66 passed**：字段逐项缺失/置空、真实Qwen fast tokenizer、完整多轮轨迹、工具观察不监督、超长拒绝、原生文件删除/置空及固定样本不足拒绝。3条训练轨迹中2条完整通过，输入为13397/11228 token，监督3748/2587 token；另1条超过32768而拒绝。3条主任务中1条题面为空，已修复为抽样前排除并留报告。Verified和Live分别通过官方TestSpec转换；Pro与Terminal通过实际Harbor Task/JobConfig加载，另测试实际Job.create但不启动容器。
+
+独立环境安装真实Transformers/PEFT后，**3项官方模型CPU接口测试通过**。下载实际配置与tokenizer；实际官方类为Qwen3_5ForConditionalGeneration，使用39580参数的同架构随机小模型验证加载、4096个LoRA可训练参数、有限差分、NLL回放、一次更新、基座冻结、保存和精确重载。只替换GPU绑定，未下载27B目标权重。Linux x86_64/Python3.12的server+dev依赖完整解析通过；Windows缺Unix resource，完整SWE运行器未验收，纯转换/API函数测试明确绕过其平台初始化后执行，不能当作完整官方运行器已跑通。
+
+实际目标权重索引也完成核对：18个分片、1199个tensor名称、64个文本LoRA目标模块；索引从Qwen官方ModelScope取得，Git blob与固定HF模型版本一致，不涉及权重下载。最终同一不变代码的三轮完整回归在三个独立进程/目录中执行，均为 **207 passed、0失败、0跳过**，包括实际官方模型接口测试；没有把重复次数当作新增用例数。另一次新mock及resume通过，主510+迁移2600=3110合成episode、360合成更新、52迁移汇总行；audit为111PASS、1预期mockWARN、0FAIL；9类彩色/灰度图布局检查和目视检查通过。black检查57文件、flake8 F/E9、compileall和git diff --check通过。报告和机器汇总为本地忽略目录中的 `真实数据与接口复核报告.md`、`final-verification.json`。
+
+已找到NICE作者官方实现，固定commit `9516c140158299e5d5c3ba82e235ed2d69132ed0`，实际执行其中候选梯度、奖励梯度和影响分数三个核心函数，与项目CPU实现对照通过。原论文warmup/多checkpoint/Adam状态/TRAK与本项目变体差异已写入METHOD.md。服务器仍须实测目标权重、32768-token更新、8卡服务、镜像可达性和官方容器判分。
+
+## 2026-10-28 连续三轮端到端复核
+
+按用户要求，修复边界问题后冻结同一产品源码，连续三轮从入口到交付进行本地复核；每轮包含完整pytest、独立fresh mock、resume、全部阶段checksum、图像布局与读图、打包及跨轮不变量比较。三轮分别使用1/3/7个mock worker，均未发现新增问题。
+
+| 轮次 | pytest | mock worker | 新增问题 |
+|---|---|---:|---:|
+| 1 | 166 passed，202.59秒，0失败/0跳过 | 1 | 0 |
+| 2 | 166 passed，203.26秒，0失败/0跳过 | 3 | 0 |
+| 3 | 166 passed，202.89秒，0失败/0跳过 | 7 | 0 |
+
+累计498次测试执行（166个不同用例重复三轮）。每轮3110合成episode、360合成更新、52迁移汇总行/200配对，固定50分母和正式null；audit均111 PASS、1预期mock WARN、0 FAIL。恢复后分数字节不变，所有阶段checksum通过；不同worker数的分数、子集成员、预算、主任务结果和迁移抽样完全一致。各轮9类彩色/灰度图已复核，各结果zip57文件且无权重/检查点载荷。black检查54文件、flake8 F/E9、compileall及git diff --check三轮通过。
+
+修复阶段新增29项回归：初始adapter完整staging后原子发布、复用时模型锁/目标模块检查、全部训练检查点链验证、完成episode仅汇总中断时不重跑、prepared服务身份/GPU和loopback代理检查、PID记录失败关闭进程、无效整数预算/零或非有限学习率拒绝、矛盾status/resolved不产生正式成功率。Handoff已同步恢复语义与新目录要求。
+
+完整本地报告为Git忽略的 `runs/three-pass-review-20261028/连续三轮复核报告.md`；source.json、verification.json、每轮review-notes.md、pytest.xml、commands.json、mock和results.zip提供追溯证据。CPU线程mock不代表真实GPU负载，仍没有目标模型/实际GPU/官方容器/32768 token更新实测；不能据此承诺所有服务器条件下零故障。本轮没有commit/push，旧证据保留。
+
+## 2026-10-28 最终全面复核
+
+全套 `python -m pytest -q --junitxml=runs/final-audit-20261028/pytest-final.xml`：**137 passed，96.22秒，无失败、无跳过**。除原多卡、下载、梯度、训练、恢复、判分和完整CLI回归外，新增11项覆盖官方API常量/函数签名、固定兼容发布引用、Verified镜像namespace、单侧同源元数据隔离、主Agent三轮/多工具/失败观察回传，以及原生reward缺少Agent证据时拒绝接受结果。
+
+本轮修复了真实上游接口漂移：SWE-bench固定官方v4.1.0引用解析出的完整commit，依赖约束swebench==4.1.0、ghapi<2；安装后主环境与Live独立环境执行pip check，并在模型下载前核对实际判分API。Git和Docker Compose纳入预检。Verified准备和判分统一swebench namespace；数据隔离对两侧instance_id/source_instance_id并集求交；原生Agent证据缺失记基础设施错误。
+
+新完整mock在 `runs/final-audit-20261028/mock-final/`：300候选、30主题、12子集、360合成更新、主510+迁移2600=3110合成episode。52迁移行、固定50分母、正式成功率/delta/相关性为null。audit：111 PASS、1预期mock WARN、0 FAIL。9类PNG/PDF和灰度图布局及读图通过；真实打包脚本生成57文件结果包，包含四套各50个ID，无模型/检查点载荷。black检查53文件、flake8 F/E9、compileall及git diff --check通过。
+
+最终本地报告与机器证据位于Git忽略的 `runs/final-audit-20261028/最终全面复核报告.md`、verification.json、blocks.csv、local-preflight.json。官方来源复核仅为只读代码/元数据核对，未下载目标权重或执行GPU/Docker。真实Python依赖安装、模型加载、32768-token容量、多推理副本、网络和官方容器仍须服务器验收；本地默认preflight按预期FAIL。HANDOFF已同步环境创建、兼容基线与新目录要求，历史证据保留。
+
 ## 2026-10-28 可配置GPU池与并行推理
 
 新增 `--num-gpus N`（默认8、最低2）和可选授权UUID池；自动生成1个梯度/训练角色及N−1个独立推理服务，管理全部服务的端口、日志、身份和失败收尾。主任务及四套benchmark按固定任务索引取模并行，保留题目、种子和固定分母。评分与12分支训练仍单卡顺序执行，未实现八卡评分或并行分支训练。

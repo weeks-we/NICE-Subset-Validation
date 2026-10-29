@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from nice_validation.core import Run, digest, read, sha, write
+from nice_validation.core import Run, digest, read, require_commit, sha, write
 from nice_validation.protocol import TOOLS, arguments
 
 
@@ -25,6 +25,17 @@ class InfraError(RuntimeError):
 
 class TaskFailure(RuntimeError):
     pass
+
+
+def patch_command(root: str, commit: str, output: str | None = None) -> str:
+    """Diff against the immutable starting commit, including staged/new files."""
+    require_commit(commit, "patch starting commit")
+    directory = shlex.quote(root)
+    destination = " --output=" + shlex.quote(output) if output is not None else ""
+    return (
+        f"git -C {directory} add -N -- . && "
+        f"git -C {directory} diff --binary --no-ext-diff --no-textconv{destination} {shlex.quote(commit)} --"
+    )
 
 
 EDITOR_PROGRAM = r"""
@@ -85,6 +96,7 @@ class DockerTask:
         self.shell = None
         self.shell_lines = queue.Queue()
         self.deadline: float | None = None
+        self.checkout_commit: str | None = None
 
     def __enter__(self):
         images = read(Path(self.cfg["agent"]["image_map"]))
@@ -193,6 +205,9 @@ class DockerTask:
             )
             if result.strip() != expected_commit:
                 raise InfraError("task_checkout_base_commit_mismatch")
+            require_commit(expected_commit, "task starting commit")
+            self.checkout_commit = expected_commit
+            write(self.folder / "patch_base.json", {"commit": expected_commit})
             if self.command("git status --porcelain --untracked-files=all", 60).strip():
                 raise InfraError("task_checkout_not_clean")
             hidden = self.command(
@@ -326,7 +341,8 @@ class DockerTask:
         }
 
     def patch(self) -> str:
-        root = shlex.quote(self.cfg["agent"]["workdir"])
+        if self.checkout_commit is None:
+            raise InfraError("patch_starting_commit_missing")
         result = subprocess.run(
             [
                 "docker",
@@ -334,15 +350,28 @@ class DockerTask:
                 self.container,
                 "bash",
                 "-lc",
-                f"git -C {root} add -N -- . && git -C {root} diff --binary HEAD",
+                patch_command(self.cfg["agent"]["workdir"], self.checkout_commit),
             ],
             capture_output=True,
-            text=True,
             timeout=60,
         )
+        stderr = (
+            result.stderr.decode("utf-8", errors="replace")
+            if isinstance(result.stderr, bytes)
+            else result.stderr
+        )
         if result.returncode:
-            raise InfraError("patch_collection:" + result.stderr)
-        return result.stdout
+            if "fatal:" in stderr or stderr.lstrip().startswith("error:"):
+                raise TaskFailure("PATCH_COLLECTION_FAILED")
+            raise InfraError("patch_collection:" + stderr)
+        try:
+            return (
+                result.stdout.decode("utf-8")
+                if isinstance(result.stdout, bytes)
+                else result.stdout
+            )
+        except UnicodeDecodeError as exc:
+            raise TaskFailure("PATCH_COLLECTION_FAILED") from exc
 
     def close(self) -> None:
         if self.container:
@@ -369,7 +398,11 @@ class DockerTask:
     def __exit__(self, exception_type, exception, traceback):
         try:
             if isinstance(exception, TaskFailure):
-                (self.folder / "patch.diff").write_text(self.patch(), encoding="utf-8")
+                try:
+                    captured = self.patch()
+                except TaskFailure:
+                    captured = ""
+                (self.folder / "patch.diff").write_bytes(captured.encode("utf-8"))
         finally:
             self.close()
 
@@ -469,6 +502,8 @@ def official_grade(cfg: dict, task: dict, patch: str, folder: Path) -> bool:
     elif backend == "live":
         cmd[0] = cfg["transfer"]["live_python"]
         cmd += ["--namespace", cfg["transfer"]["suites"]["live"]["namespace"]]
+    else:
+        cmd += ["--namespace", "swebench"]
     write(folder / "command.json", cmd)
     with (
         (folder / "harness.stdout.log").open("w", encoding="utf-8") as stdout,
@@ -683,9 +718,9 @@ def real_episode(
     except TaskFailure as exc:
         stop_reason = str(exc)
         if (folder / "patch.diff").exists():
-            patch = (folder / "patch.diff").read_text(encoding="utf-8")
+            patch = (folder / "patch.diff").read_bytes().decode("utf-8")
     write(folder / "trace.json", traces)
-    (folder / "patch.diff").write_text(patch, encoding="utf-8")
+    (folder / "patch.diff").write_bytes(patch.encode("utf-8"))
     exhausted = stop_reason in {
         "ACTION_LIMIT",
         "WALL_LIMIT",
@@ -693,6 +728,7 @@ def real_episode(
         "CONTEXT_LIMIT",
         "TOOL_TIMEOUT",
         "SHELL_TERMINATED",
+        "PATCH_COLLECTION_FAILED",
     } or stop_reason.startswith("INVALID_TOOL_CALL")
     resolved = (
         False if exhausted else official_grade(cfg, task, patch, folder / "grading")
@@ -735,6 +771,7 @@ def _episode_job(
         return value
     attempts = sorted(task_folder.glob("attempt_*"))
     result, infra_types = None, {}
+    completed_attempts = []
     for old in attempts:
         p = old / "result.json"
         if not p.exists():
@@ -752,7 +789,35 @@ def _episode_job(
         if value.get("status") == "INFRA_ERROR":
             key = value.get("error_type", "interrupted_episode")
             infra_types[key] = infra_types.get(key, 0) + 1
-    for attempt in range(len(attempts), 9):
+        else:
+            if value.get("status") not in {"RESOLVED", "TASK_FAILED"} or any(
+                value.get(key) != expected
+                for key, expected in {
+                    "run_identity": run.identity,
+                    "task_id": task["instance_id"],
+                    "model_id": model_id,
+                    "repeat": repeat,
+                    "seed": 2026 if not nice else 42 + ti * 4 + repeat,
+                }.items()
+            ):
+                raise ValueError(
+                    "Completed attempt identity/status mismatch; preserve its evidence"
+                )
+            completed_attempts.append(value)
+    if completed_attempts:
+        if len(completed_attempts) != 1:
+            raise ValueError(
+                "Multiple completed attempts exist; preserve evidence and investigate"
+            )
+        result = completed_attempts[0]
+        run.event(
+            stage,
+            "completed_attempt_recovered",
+            task_id=task["instance_id"],
+            model_id=model_id,
+            attempt_id=result["attempt_id"],
+        )
+    for attempt in [] if result is not None else range(len(attempts), 9):
         if any(n > run.cfg["agent"]["infra_retries"] for n in infra_types.values()):
             break
         attempt_folder = task_folder / f"attempt_{attempt:02d}"

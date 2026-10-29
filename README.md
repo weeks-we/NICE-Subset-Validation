@@ -4,7 +4,9 @@
 
 固定设计：从 SWE-smith trajectories 选 300 条成功轨迹，从 SWE-smith 任务源独立保留 30 道主 validation，每题 4 次 NICE rollout；高、中、低、全池随机各 3 个 30 条子集。12 个分支从同一 adapter 独立训练一遍。另冻结 SWE-bench Verified、Pro Public V2、Live（Python full 快照）、Terminal-Bench 2.0 各 50 题，用于初始模型与 12 个训练后模型的迁移评测。合计 510 次主集 + 2600 次迁移 = **3110 次 Agent episode**，360 次训练曝光。smoke、基础设施重试和纯补丁重判另计。详见 [TRANSFER.md](docs/TRANSFER.md)。
 
-本地实现包含数据获取与冻结、消息校验、assistant 掩码、奖励梯度、流式投影评分、预算条件抽样、独立 SFT、步骤检查点、LangChain 工具路由、持久 Docker shell、官方 SWE-bench 判分、CSV/PNG/PDF、状态和审计。**目标模型、真实数据和容器链路尚待服务器实测。** Mock 的分数、训练和成功率均为合成值，不能用于研究结论。
+本地实现包含数据获取与冻结、消息校验、assistant 掩码、奖励梯度、流式投影评分、预算条件抽样、独立 SFT、步骤检查点、LangChain 工具路由、持久 Docker shell、官方 SWE-bench 判分、CSV/PNG/PDF、状态和审计。少量真实样本及官方架构的CPU接口已验证；**27B目标权重、完整真实训练和容器判分尚待服务器实测。** Mock 的分数、训练和成功率均为合成值，不能用于研究结论。
+
+NICE对训练候选及主验证轨迹都只提取LoRA梯度，基座冻结；评分不更新参数，后续SFT也仅更新LoRA。主任务与Pro补丁固定对比任务起点commit，保留Agent已提交的改动及补丁字节；Pro重判还核对相同的仓库起点。
 
 ## 本地运行
 

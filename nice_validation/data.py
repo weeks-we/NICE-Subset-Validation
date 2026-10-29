@@ -20,6 +20,7 @@ from nice_validation.core import (
     write,
 )
 from nice_validation.protocol import TOOLS, validate_messages
+from nice_validation.schemas import record_identity, task_record, training_record
 
 
 def proportional(
@@ -67,6 +68,25 @@ def near_prompt(left: str, right: str, threshold: float) -> bool:
         return False
     matcher = SequenceMatcher(None, left, right, autojunk=False)
     return matcher.quick_ratio() >= threshold and matcher.ratio() >= threshold
+
+
+def main_task_records(rows: list[dict], backend: str) -> tuple[list[dict], dict]:
+    """Remove absent issue statements before drawing the fixed held-out sample."""
+    eligible, excluded = [], []
+    for row in rows:
+        record_identity(row)
+        problem = row.get("problem_statement")
+        if problem is None or (isinstance(problem, str) and not problem.strip()):
+            excluded.append(row["instance_id"])
+            continue
+        eligible.append(task_record(row, backend))
+    return eligible, {
+        "raw_read": len(rows),
+        "eligible_with_statement": len(eligible),
+        "excluded_missing_problem_statement": len(excluded),
+        "excluded_task_ids": excluded,
+        "selection": "source-schema filtering before sampling; independent of model outcomes",
+    }
 
 
 def render(
@@ -211,7 +231,11 @@ def fixture() -> tuple[list[dict], list[dict]]:
 
 
 def prepare(run: Run) -> None:
-    from nice_validation.transfer_sources import prepare_transfer, transfer_tasks
+    from nice_validation.transfer_sources import (
+        prepare_transfer,
+        transfer_tasks,
+        task_identities,
+    )
 
     prepare_transfer(run)
     with run.stage("prepare-data") as out:
@@ -245,6 +269,12 @@ def prepare(run: Run) -> None:
                 raise ValueError(
                     "Main task source must contain at least 31 distinct tasks"
                 )
+            validation, task_report = main_task_records(
+                validation, cfg["data"].get("validation_kind", "swesmith")
+            )
+            task_report_path = root / "main_task_filter_report.json"
+            write(task_report_path, task_report)
+            out.append(task_report_path)
         if len({r["instance_id"] for r in validation}) != len(validation):
             raise ValueError("Duplicate validation task ids")
         validation = [
@@ -261,12 +291,14 @@ def prepare(run: Run) -> None:
                 "Not enough main tasks after excluding transfer overlap; need 30 validation plus one development task"
             )
         external = transfer_tasks(run)
-        external_ids = {row["instance_id"] for row in external}
+        external_ids = {
+            identity for row in external for identity in task_identities(row)
+        }
         external_prompts = [normalized(row["problem_statement"]) for row in external]
         validation = [
             row
             for row in validation
-            if row["instance_id"] not in external_ids
+            if not task_identities(row).intersection(external_ids)
             and not any(
                 normalized(row["problem_statement"]) == p
                 or near_prompt(
@@ -277,15 +309,20 @@ def prepare(run: Run) -> None:
                 for p in external_prompts
             )
         ]
+        if len(validation) < 31:
+            raise ValueError(
+                "Not enough main tasks after excluding transfer overlap; need 30 validation plus one development task"
+            )
         selected, reserve = proportional(validation, 30, 42)
         development = max(reserve, key=lambda row: row["instance_id"])
         reserve = [
             row for row in reserve if row["instance_id"] != development["instance_id"]
         ]
         heldout = selected + [development] + external
-        validation_ids = {row["instance_id"] for row in heldout}
+        validation_ids = {
+            identity for row in heldout for identity in task_identities(row)
+        }
         problems = [normalized(row["problem_statement"]) for row in heldout]
-        families = {row.get("source_instance_id") for row in heldout} - {None}
         filtered, counts, mapping = [], Counter(), []
         tools_seen = Counter()
         for row in sorted(
@@ -293,16 +330,12 @@ def prepare(run: Run) -> None:
             key=lambda r: (str(r.get("instance_id", "")), str(r.get("traj_id", ""))),
         ):
             try:
-                if row.get("resolved") is not True:
-                    raise ValueError("unresolved")
+                training_record(row)
                 messages = validate_messages(row["messages"])
                 for msg in messages:
                     for call in msg.get("tool_calls", []):
                         tools_seen[call["function"]["name"]] += 1
-                if (
-                    row["instance_id"] in validation_ids
-                    or row.get("source_instance_id") in families
-                ):
+                if task_identities(row).intersection(validation_ids):
                     raise ValueError("cross_set_identity_or_family")
                 prompt = normalized(
                     "\n".join(

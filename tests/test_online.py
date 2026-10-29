@@ -62,6 +62,10 @@ def configured(tmp_path):
 
 
 def fake_downloads(monkeypatch, training=None, validation=None):
+    monkeypatch.setattr(
+        "nice_validation.compatibility.model_loader_api",
+        lambda cfg, root: {"synthetic_fixture": True, "weights_loaded": False},
+    )
     if training is None:
         training, validation = fixture()
     downloads, loads = [], []
@@ -254,6 +258,25 @@ def test_model_download_resumes_after_config_arrives(tmp_path, monkeypatch):
     assert len(attempts) == 2
 
 
+def test_incompatible_model_config_stops_before_downloading_weights(
+    tmp_path, monkeypatch
+):
+    cfg, _ = configured(tmp_path)
+    downloads, _, hub = fake_downloads(monkeypatch)
+    snapshots = []
+    hub.snapshot_download = lambda *args, **kwargs: snapshots.append(kwargs)
+
+    def incompatible(*args, **kwargs):
+        raise ValueError("official loader does not support actual config")
+
+    monkeypatch.setattr("nice_validation.compatibility.model_loader_api", incompatible)
+    with pytest.raises(ValueError, match="actual config"):
+        fetch_model(cfg)
+    assert [item[1] for item in downloads] == ["config.json"]
+    assert snapshots == []
+    assert not (Path(cfg["model"]["path"]) / "model_lock.json").exists()
+
+
 def test_online_prepare_to_processing_and_existing_pipeline(tmp_path, monkeypatch):
     cfg, _ = configured(tmp_path)
     training, validation = fixture()
@@ -265,6 +288,12 @@ def test_online_prepare_to_processing_and_existing_pipeline(tmp_path, monkeypatc
         }
         for i in range(60, 500)
     ]
+    for row in validation:
+        row.update(
+            image_name="fixture/swesmith:unit-test",
+            FAIL_TO_PASS=["tests/test_fixture.py::test_fix"],
+            PASS_TO_PASS=[],
+        )
     downloads, _, hub = fake_downloads(monkeypatch, training, validation)
 
     def snapshot(identifier, **kwargs):
@@ -304,7 +333,8 @@ def test_online_prepare_to_processing_and_existing_pipeline(tmp_path, monkeypatc
     source_hash = sha(Path(cfg["data"]["training_path"]))
     assert prepare_online(cfg, download_model=True).identity == run.identity
     assert sha(Path(cfg["data"]["training_path"])) == source_hash
-    assert len(downloads) == 4
+    assert len([item for item in downloads if item[0] != cfg["model"]["id"]]) == 4
+    assert len([item for item in downloads if item[1] == "config.json"]) == 1
     called = []
     monkeypatch.setattr("nice_validation.smoke.smoke", lambda r: called.append("smoke"))
     monkeypatch.setattr(

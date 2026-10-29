@@ -1,10 +1,14 @@
 # 方法定义
 
-研究名称：单初始 checkpoint 的 NICE 型评分验证。用户未提供可核实的 NICE 论文或官方评分实现，本项目不把以下公式归因于原论文。它们来自此次需求定义。原论文核对状态为 **未核实**；不得补造文献链接、引文或声称完整复现。
+研究名称：单初始 checkpoint 的 NICE 型评分验证。2026-10-28 已核对 [ICML 2025 论文](https://proceedings.mlr.press/v267/wang25bm.html)及[作者官方源码](https://github.com/JTWang2000/NICE/tree/9516c140158299e5d5c3ba82e235ed2d69132ed0)。本项目采用此次需求约定的单初始 checkpoint 变体，不能称为原论文的完整复现。
+
+源码对照：`obtain_gradients` 的候选 token 平均 CE、`obtain_policy_gradients` 在不做长度归一化时的奖励加权 CE 总和，与本项目的梯度方向一致；作者 `calculate_influence_score` 对归一化向量做矩阵乘法，本项目对任务余弦取均值。CPU 上实际执行这三个作者函数并作数值对照已通过，外部 tokenizer/reward 使用明确的测试替身。作者原设置使用 warmup、多 checkpoint、已有 Adam moments 和 TRAK Rademacher 投影；本项目固定初始 checkpoint、fresh AdamW、CountSketch、30 个 SWE-smith 多轮任务及每题四次 rollout。作者 Adam 辅助函数的 epsilon 位置及偏置修正规则也与本项目不同，不能直接把两种 Adam 特征视为同一实现。本项目 Adam 方向按实际首次 AdamW 更新验证，不为追随原仓库而修改既定研究定义。
 
 2026-10-27 按用户确认更新：主 validation 为 SWE-smith 任务源中与训练候选分开的 30 题；Verified 不再作为 NICE 评分源。另固定 Verified、Pro Public V2、Live Python full 快照、Terminal-Bench 2.0 各 50 题，作为初始模型与全部 12 个分支的独立迁移评测。具体来源、隔离与 native harness 见 TRANSFER.md。
 
 基座为固定 revision 的 `Qwen/Qwen3.8-27B`。实际架构、官方加载类、库版本、文本注意力模块和非 thinking 设置，须在服务器核对。没有预热状态，只使用共同初始 checkpoint 的 LoRA 可训练参数空间。基座冻结，LoRA rank=16、alpha=32、dropout=0。评分时关闭 dropout，不创建优化器更新。
+
+候选和主验证两端的梯度都只取同一组LoRA A/B参数，不是全量基座梯度。候选端为assistant token均值CE，验证端为奖励加权生成token NLL总和；后者用固定四次rollout分母。实际官方小模型测试检查两端反传后基座梯度均为None、参数均未被评分修改。12个正式SFT分支同样只更新LoRA。完整加载基座用于前向和反向传播，不等于优化全部基座参数。
 
 ## 候选梯度与验证方向
 

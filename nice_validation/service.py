@@ -61,6 +61,19 @@ def service_identity(cfg: dict) -> str:
     )
 
 
+def matching_health(value, cfg: dict, expected_gpu: str | None = None) -> bool:
+    if not isinstance(value, dict) or value.get("status") != "ready":
+        return False
+    gpus = value.get("gpu_uuids")
+    if not isinstance(gpus, list) or len(gpus) != 1 or not isinstance(gpus[0], str):
+        return False
+    if expected_gpu is not None and gpus != [expected_gpu]:
+        return False
+    if expected_gpu is None and gpus == cfg["model"]["gpu_uuids"]:
+        return False
+    return value.get("service_identity") == service_identity(cfg)
+
+
 def serve(cfg: dict, host: str, port: int) -> None:
     server_only(cfg)
     if host not in {"127.0.0.1", "localhost"}:

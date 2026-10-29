@@ -2,6 +2,12 @@
 
 推荐从 `scripts/run_server.py` 进入，由 `nice_validation/supervisor.py` 管理生命周期。以下路径相对于服务器 `<storage>`，configure_server 将其生成绝对路径；main/example 配置含占位项，不能直接真实执行。
 
+SWE-bench官方API基线为v4.1.0（完整commit冻结），适配SWE-smith现有判分接口。compatibility.harness_api和安装后的pip check在模型下载前拦截版本/接口不兼容；Verified镜像命名空间与正式grader一致。test_final_review另覆盖单侧同源元数据隔离、主Agent多轮/多工具/失败观察回传，以及原生reward缺少Agent证据时拒绝接受结果。
+
+2026-10-28 补充真实接口验证：下载少量原始训练轨迹、SWE-smith/Verified/Live记录、Pro原生任务及Terminal2.0注册commit的原生任务，直接调用当前校验/分词/官方转换代码。主集抽样之前用 `data.main_task_records` 排除空题面；`schemas.task_record` 分别校验三种HF任务格式，不给Live补造version；`compatibility.model_loader_api` 在权重下载前导入实际模型类。`test_source_schemas` 做字段缺失/空值注入；`test_official_model_interface` 用实际Transformers/PEFT和随机小型混合注意力Qwen进行CPU加载、有限差分、更新、回放与重载测试。真实目标权重、Docker判分及H200容量仍须服务器验收。
+
+最后严格复核新增 `test_parquet_interface`：实际datasets/Arrow获取与截断JSONL恢复；`test_patch_baseline`：真实Git的固定起点、Agent commit、LF/CRLF、暂存/新文件/二进制重放、仓库破坏与Docker故障分流、Pro相同起点重判和真实重判标记。主任务使用冻结SHA及bytes补丁；Pro在setup记录干净起点，通过Harbor文件下载保留补丁字节，重判先核对起点。官方模型测试另实际调用generate和NICE反传，确认候选与验证两端都是LoRA梯度、基座梯度为None、评分不改变参数，并保留pad_token_id=0。
+
 | 块 | 来源与输出 | 代码 | CPU 验证 |
 |---|---|---|---|
 | 版本与路径 | HF 模型/数据 + GitHub harness → data/source_revisions.json、configs/*.local.yaml；两张独立GPU | online.resolve_sources/configure_server | test_online、test_supervisor：commit固定、配置幂等、绝对路径、已有模型证据 |
@@ -19,5 +25,7 @@
 原始数据在服务器在线准备，未加入 Git；本机没有正式数据、目标模型或镜像。HF/GitHub main 只在首次解析元数据时使用，此后下载、安装和恢复使用完整 commit。Terminal2.0 的任务列表与 commit 来自固定 Harbor registry，不混入同仓库未注册任务。Live 使用 `<storage>/envs/live/bin/python`，隔离同名 swebench 包。
 
 默认GPU池8张，可用--num-gpus调整（至少2），gpus.select_gpus遵守授权池或可见设备顺序；online生成1份主配置和N−1份服务配置，supervisor逐个管理独立GPU/端口/日志。主任务和外部benchmark按原任务索引取模分片，排序汇总且不改随机种子；评分和训练仍单卡顺序执行。test_gpu_pool覆盖2/4/8卡、设备不足、可见范围、启动失败清理，以及四套200题的真实线程并行路由。
+
+test_recovery_edges补充：初始adapter中断不发布半成品、已存在目录不覆盖、基座锁与模块一致、完整检查点链校验、已完成episode汇总发布中断不重跑、prepared服务身份与GPU校验、PID记录失败关闭新进程，以及无效预算/零学习率/矛盾结果标签拒绝。正式成功率只接受status与resolved一致且题目齐全的结果。
 
 服务与梯度端共享模型、tokenizer、adapter、精度、模板和工具定义，GPU UUID分开。健康状态包含源码/环境/模型/运行身份，不能把任意ready进程当正确服务。完整长度更新、真实模型logprob对齐和Docker grader仍需服务器证据，失败阻止正式实验。

@@ -5,16 +5,40 @@ import json
 from pathlib import Path
 import shlex
 import time
+import uuid
 
-from nice_validation.core import config, digest, write
+from nice_validation.core import config, digest, require_commit, write
 from nice_validation.harness import (
     EDITOR_PROGRAM,
     InfraError,
     TaskFailure,
     request_generation,
+    patch_command,
 )
 from nice_validation.model import tree_identity
 from nice_validation.protocol import arguments
+
+
+async def pro_checkout(environment) -> dict:
+    probe = await environment.exec(
+        command=(
+            "for d in /app /testbed; do "
+            'if git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1; then '
+            'git -C "$d" rev-parse --show-toplevel && '
+            'git -C "$d" rev-parse HEAD && '
+            'git -C "$d" status --porcelain --untracked-files=all; exit $?; fi; '
+            "done; exit 1"
+        ),
+        timeout_sec=60,
+    )
+    lines = (probe.stdout or "").splitlines()
+    if probe.return_code or len(lines) != 2 or not lines[0].startswith("/"):
+        raise InfraError("pro_starting_checkout_missing_or_dirty")
+    try:
+        require_commit(lines[1], "Pro starting commit")
+    except ValueError as exc:
+        raise InfraError("pro_starting_commit_invalid") from exc
+    return {"root": lines[0], "commit": lines[1]}
 
 
 def environment_images(environment) -> dict:
@@ -48,8 +72,12 @@ async def service_loop(
     instruction: str,
     context,
     capture_patch: bool = False,
+    patch_base: dict | None = None,
 ) -> None:
     logs.mkdir(parents=True, exist_ok=True)
+    if capture_patch:
+        patch_base = patch_base or await pro_checkout(environment)
+        write(logs / "patch_base.json", patch_base)
     messages = [
         {
             "role": "system",
@@ -176,13 +204,37 @@ async def service_loop(
         )
         context.metadata = {"stop_reason": stop, "task_failure": failed}
         if capture_patch:
+            remote_patch = "/tmp/nice-model-" + uuid.uuid4().hex + ".patch"
             diff = await environment.exec(
-                command="cd /app 2>/dev/null || cd /testbed; git add -N .; git diff --binary HEAD",
+                command=patch_command(
+                    patch_base["root"], patch_base["commit"], remote_patch
+                ),
                 timeout_sec=60,
             )
             if diff.return_code:
-                raise InfraError("pro_patch_capture_failed")
-            (logs / "model.patch").write_text(diff.stdout or "", encoding="utf-8")
+                write(
+                    logs / "patch_capture_failure.json",
+                    {"return_code": diff.return_code, "stderr": diff.stderr},
+                )
+                write(
+                    logs / "episode.json",
+                    {
+                        "stop_reason": "PATCH_COLLECTION_FAILED",
+                        "task_failure": True,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "wall_seconds": time.monotonic() - start,
+                    },
+                )
+                context.metadata = {
+                    "stop_reason": "PATCH_COLLECTION_FAILED",
+                    "task_failure": True,
+                }
+                (logs / "model.patch").write_bytes(b"")
+            else:
+                await environment.download_file(
+                    source_path=remote_patch, target_path=logs / "model.patch"
+                )
 
 
 # Import the optional harness only when Harbor instantiates the native agent.
@@ -216,6 +268,11 @@ class NiceAgent(BaseAgent):
         if self.expected_images is not None and proof != self.expected_images:
             raise InfraError("native_environment_image_changed")
         write(self.logs_dir / "environment_images.json", proof)
+        self.patch_base = (
+            await pro_checkout(environment) if self.capture_patch else None
+        )
+        if self.patch_base:
+            write(self.logs_dir / "patch_base.json", self.patch_base)
 
     async def run(self, instruction, environment, context):
         await service_loop(
@@ -226,16 +283,24 @@ class NiceAgent(BaseAgent):
             instruction,
             context,
             self.capture_patch,
+            self.patch_base,
         )
 
 
 class NicePatchReplay(BaseAgent):
     def __init__(
-        self, *args, patch_path: str, patch_sha256: str, expected_images: dict, **kwargs
+        self,
+        *args,
+        patch_path: str,
+        patch_sha256: str,
+        expected_images: dict,
+        expected_checkout: dict | None = None,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.patch_path, self.patch_sha = Path(patch_path), patch_sha256
         self.expected_images = expected_images
+        self.expected_checkout = expected_checkout
 
     @staticmethod
     def name():
@@ -247,6 +312,11 @@ class NicePatchReplay(BaseAgent):
     async def setup(self, environment):
         if environment_images(environment) != self.expected_images:
             raise InfraError("native_regrade_image_changed")
+        if (
+            not self.expected_checkout
+            or await pro_checkout(environment) != self.expected_checkout
+        ):
+            raise InfraError("pro_regrade_starting_checkout_changed")
 
     async def run(self, instruction, environment, context):
         from nice_validation.core import sha
@@ -259,7 +329,9 @@ class NicePatchReplay(BaseAgent):
             source_path=self.patch_path, target_path="/tmp/nice-model.patch"
         )
         result = await environment.exec(
-            command="cd /app 2>/dev/null || cd /testbed; git apply --binary /tmp/nice-model.patch",
+            command="git -C "
+            + shlex.quote(self.expected_checkout["root"])
+            + " apply --binary /tmp/nice-model.patch",
             timeout_sec=120,
         )
         write(

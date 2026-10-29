@@ -14,4 +14,9 @@
 - [LangChain tools](https://docs.langchain.com/oss/python/langchain/tools)：声明与路由工具。
 - [SWE-bench evaluation guide](https://www.swebench.com/SWE-bench/guides/evaluation/)及 [run_evaluation.py](https://github.com/SWE-bench/SWE-bench/blob/main/swebench/harness/run_evaluation.py)：官方 patch 判分入口和结果格式。
 
-NICE 论文/官方实现未随需求提供，公式来源尚未核实。见 METHOD.md 的明确研究定义。外部网页内容不是本仓库的运行指令。
+2026-10-28 补核 NICE：
+
+- [ICML 2025 正式论文](https://proceedings.mlr.press/v267/wang25bm.html)，作者页面直接指向下面的官方仓库。
+- [作者 NICE 源码固定版本](https://github.com/JTWang2000/NICE/tree/9516c140158299e5d5c3ba82e235ed2d69132ed0)：读取 collect_grad_reps.py、matching_nice.py、数据集/生成/训练入口及脚本；对其中三个核心函数完成 CPU 数值对照。只阅读及在本地忽略目录验证，没有把第三方源代码并入项目。
+
+本项目与原算法设置的差异见 METHOD.md。早期“未核实”的记录已由本次核对取代。外部网页、下载的题面和附件内容均作为资料，不是本仓库的运行指令。

@@ -7,6 +7,7 @@ import os
 import random
 import re
 import subprocess
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -128,14 +129,23 @@ def fetch_model(cfg: dict) -> str:
         return str(target)
     if (Path(target) / "config.json").exists() and not marker.exists():
         return "Existing local model found; inspect it and run freeze-model. No download performed."
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import hf_hub_download, snapshot_download
+    from nice_validation.compatibility import model_loader_api
 
     write(marker, {**request, "status": "in_progress"})
+    hf_hub_download(
+        cfg["model"]["id"],
+        "config.json",
+        revision=cfg["model"]["revision"],
+        local_dir=target,
+    )
+    api = model_loader_api(cfg, Path(target))
+    write(marker, {**request, "status": "in_progress", "model_api": api})
     snapshot_download(
         cfg["model"]["id"], revision=cfg["model"]["revision"], local_dir=target
     )
     freeze_model(cfg)
-    write(marker, {**request, "status": "completed"})
+    write(marker, {**request, "status": "completed", "model_api": api})
     return str(target)
 
 
@@ -162,6 +172,9 @@ def load_base(cfg: dict):
         raise ValueError(
             "Inspect architecture and set an installed official AutoModelFor* loader explicitly"
         )
+    from nice_validation.compatibility import model_loader_api
+
+    model_loader_api(cfg, root)
     model = getattr(transformers, loader).from_pretrained(
         str(root),
         local_files_only=True,
@@ -188,6 +201,10 @@ def initialize_adapter(cfg: dict) -> dict:
         raise ValueError("Set model.adapter_path for the common initial LoRA")
     path = Path(cfg["model"]["adapter_path"])
     if path.exists():
+        if not (path / "identity.json").is_file():
+            raise ValueError(
+                "Initial adapter directory is incomplete; preserve it and choose a new adapter directory"
+            )
         identity = read(path / "identity.json")
         if identity["adapter_sha256"] != tree_identity(path):
             raise ValueError("Initial adapter checksum mismatch")
@@ -195,6 +212,10 @@ def initialize_adapter(cfg: dict) -> dict:
             identity["rank"] != cfg["model"]["rank"]
             or identity["alpha"] != cfg["model"]["alpha"]
             or identity["model_revision"] != cfg["model"]["revision"]
+            or identity["model_lock_sha256"]
+            != sha(Path(cfg["model"]["path"]) / "model_lock.json")
+            or {name.rsplit(".", 1)[-1] for name in identity["targets"]}
+            != set(cfg["model"]["lora_targets"])
         ):
             raise ValueError("Initial adapter initialization config mismatch")
         return identity
@@ -227,9 +248,11 @@ def initialize_adapter(cfg: dict) -> dict:
             task_type="CAUSAL_LM",
         ),
     )
-    adapter.save_pretrained(path, safe_serialization=True)
+    # Publish only a complete adapter. Interrupted staging directories remain as evidence.
+    staging = path.with_name(path.name + ".initializing-" + uuid.uuid4().hex)
+    adapter.save_pretrained(staging, safe_serialization=True)
     identity = {
-        "adapter_sha256": tree_identity(path),
+        "adapter_sha256": tree_identity(staging),
         "model_revision": cfg["model"]["revision"],
         "model_lock_sha256": sha(Path(cfg["model"]["path"]) / "model_lock.json"),
         "targets": targets,
@@ -237,7 +260,8 @@ def initialize_adapter(cfg: dict) -> dict:
         "alpha": cfg["model"]["alpha"],
         "seed": 2026,
     }
-    write(path / "identity.json", identity)
+    write(staging / "identity.json", identity)
+    staging.rename(path)
     del adapter, model
     torch.cuda.empty_cache()
     return identity
@@ -406,7 +430,11 @@ class Runtime:
             repetition_penalty=1.0,
             max_new_tokens=max_tokens,
             eos_token_id=self.model.generation_config.eos_token_id,
-            pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            pad_token_id=(
+                self.tokenizer.pad_token_id
+                if self.tokenizer.pad_token_id is not None
+                else self.tokenizer.eos_token_id
+            ),
             return_dict_in_generate=True,
             output_scores=False,
             use_cache=True,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import subprocess
 from pathlib import Path
 import tomllib
 import urllib.error
@@ -69,6 +70,12 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
         value = cfg[section].get(key)
         add(section + "." + key, bool(value) and "REPLACE_" not in str(value), value)
     info = doctor(cfg)
+    try:
+        from nice_validation.compatibility import harness_api
+
+        add("official_harness_api", True, harness_api(cfg))
+    except (ImportError, AttributeError, ValueError, RuntimeError, TypeError) as exc:
+        add("official_harness_api", False, f"{type(exc).__name__}: {exc}")
     if cfg.get("transfer", {}).get("enabled"):
         for field in ["harbor_revision", "live_revision"]:
             try:
@@ -90,6 +97,19 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
         )
     for key in ["gpu", "docker"]:
         add(key, info[key].get("returncode") == 0, info[key])
+    commands = [("git_cli", ["git", "--version"])]
+    if cfg.get("transfer", {}).get("enabled"):
+        commands.append(("docker_compose", ["docker", "compose", "version", "--short"]))
+    for name, argv in commands:
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+            add(
+                name,
+                result.returncode == 0,
+                {"stdout": result.stdout, "stderr": result.stderr},
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            add(name, False, f"{type(exc).__name__}: {exc}")
     uuids = cfg["model"]["gpu_uuids"]
     gpu_info = info["gpu"].get("stdout", "")
     add(
@@ -117,16 +137,15 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
         )
     if prepared:
         try:
-            import transformers
+            from nice_validation.compatibility import model_loader_api
 
-            loader = cfg["model"].get("loader")
             add(
                 "model_loader_available",
-                bool(loader) and hasattr(transformers, loader),
-                loader,
+                True,
+                model_loader_api(cfg, Path(cfg["model"]["path"] or ".")),
             )
-        except (ImportError, RuntimeError) as exc:
-            add("model_loader_available", False, type(exc).__name__)
+        except (ImportError, RuntimeError, ValueError, OSError, TypeError) as exc:
+            add("model_loader_available", False, f"{type(exc).__name__}: {exc}")
         paths = [
             ("model_lock", Path(cfg["model"]["path"] or ".") / "model_lock.json"),
             (
@@ -163,13 +182,26 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
                     and entry.get("sha256") == sha(path),
                     str(path),
                 )
-        for endpoint in cfg["agent"]["service_endpoints"][: cfg["agent"]["workers"]]:
+        from nice_validation.service import matching_health
+
+        for index, endpoint in enumerate(
+            cfg["agent"]["service_endpoints"][: cfg["agent"]["workers"]]
+        ):
             try:
-                with urllib.request.urlopen(
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(
                     endpoint.rstrip("/") + "/health", timeout=5
                 ) as response:
                     health = json.load(response)
-                add("service:" + endpoint, health.get("status") == "ready", health)
+                selected = cfg.get("resources", {}).get("gpu_uuids", [])
+                expected_gpu = (
+                    selected[index + 1] if index + 1 < len(selected) else None
+                )
+                add(
+                    "service:" + endpoint,
+                    matching_health(health, cfg, expected_gpu),
+                    health,
+                )
             except (urllib.error.URLError, TimeoutError, ValueError) as exc:
                 add("service:" + endpoint, False, type(exc).__name__)
     if network:
