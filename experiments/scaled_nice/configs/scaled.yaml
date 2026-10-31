@@ -1,0 +1,18 @@
+extends: main.yaml
+output: runs/scaled-main
+schedule: phased-independent
+model:
+  id: Qwen/Qwen2.5-Coder-7B-Instruct
+  loader: AutoModelForCausalLM
+experiment:
+  design: scaled-main-v1
+  candidates: 3000
+  validation: 100
+  subset_size: 150
+agent:
+  max_actions: 75
+  budget_exhaustion_policy: grade_patch
+  max_new_tokens: 2048
+  total_new_tokens: 16384
+transfer:
+  enabled: false

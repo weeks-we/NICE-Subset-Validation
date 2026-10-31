@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nice-subset-validation"
+version = "0.1.0"
+description = "Single initial checkpoint NICE-style subset validation"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26,<3", "PyYAML>=6,<7", "matplotlib>=3.8,<4", "scipy>=1.13,<2", "packaging>=23,<27"]
+
+[project.optional-dependencies]
+server = ["torch>=2.6,<3", "transformers>=5.8,<6", "peft>=0.18,<1", "accelerate>=1.10,<2", "datasets>=3,<6", "huggingface-hub>=0.34,<2", "langchain-core>=1.0,<2", "docker>=7,<8", "swebench==4.1.0", "ghapi<2", "swesmith>=0.0.1", "harbor>=0.22,<1", "psutil>=5.9"]
+tokenizer = ["transformers>=5.8,<6", "huggingface-hub>=0.34,<2"]
+dev = ["pytest>=8", "pytest-cov>=5", "torch>=2.5", "Jinja2>=3.1,<4"]
+
+[project.scripts]
+nice = "nice_validation.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nice_validation*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -p no:cacheprovider"
