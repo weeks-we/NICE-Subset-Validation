@@ -354,15 +354,39 @@ class Runtime:
         import torch
 
         device = next(self.model.parameters()).device
-        ids = torch.tensor([row["input_ids"]], device=device)
-        labels = torch.tensor([row["labels"]], device=device)
-        logits = self.model(input_ids=ids, attention_mask=torch.ones_like(ids)).logits
-        return torch.nn.functional.cross_entropy(
+        rows = row if isinstance(row, list) else [row]
+        if not rows or any(
+            len(r["input_ids"]) < 2 or len(r["input_ids"]) != len(r["labels"])
+            for r in rows
+        ):
+            raise ValueError("Invalid training batch tokens/labels")
+        width = max(len(r["input_ids"]) for r in rows)
+        pad = self.tokenizer.pad_token_id
+        if pad is None:
+            pad = self.tokenizer.eos_token_id
+        if pad is None:
+            raise ValueError("Tokenizer requires a pad or EOS token for batching")
+        ids = torch.full((len(rows), width), pad, dtype=torch.long, device=device)
+        labels = torch.full_like(ids, -100)
+        attention = torch.zeros_like(ids)
+        for index, item in enumerate(rows):
+            length = len(item["input_ids"])
+            ids[index, :length] = torch.tensor(item["input_ids"], device=device)
+            labels[index, :length] = torch.tensor(item["labels"], device=device)
+            attention[index, :length] = 1
+        tokens = (labels[:, 1:] != -100).sum(dim=1)
+        if bool((tokens == 0).any()):
+            raise ValueError("Every trajectory requires supervised next-token targets")
+        logits = self.model(input_ids=ids, attention_mask=attention).logits
+        losses = torch.nn.functional.cross_entropy(
             logits[:, :-1].float().reshape(-1, logits.shape[-1]),
             labels[:, 1:].reshape(-1),
             ignore_index=-100,
-            reduction="mean",
+            reduction="none",
         )
+        # Match NICE's per-trajectory token-mean objective; long trajectories
+        # do not acquire greater weight merely because they share a batch.
+        return (losses.reshape(len(rows), -1).sum(dim=1) / tokens).mean()
 
     def close(self) -> None:
         import gc

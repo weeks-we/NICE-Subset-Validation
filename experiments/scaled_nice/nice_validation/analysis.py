@@ -14,6 +14,7 @@ import numpy as np
 
 from nice_validation.core import Run, read, read_jsonl, write
 from nice_validation.design import counts, strata_ranges
+from nice_validation.batching import steps_per_epoch, metric_members
 
 
 FIGURES = [
@@ -179,6 +180,11 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
                     "training_seconds": training.get("wall_seconds"),
                     "updates": training.get("updates"),
                     "exposures": training.get("exposures"),
+                    "effective_batch": training.get("effective_batch"),
+                    "micro_batch_size": training.get("micro_batch_size"),
+                    "gradient_accumulation_steps": training.get(
+                        "gradient_accumulation_steps"
+                    ),
                     "initial_adapter_sha256": training.get("initial_adapter_sha256"),
                     "gpu_hours": training.get("gpu_hours"),
                     "evaluation_status": evaluation["status"],
@@ -322,6 +328,9 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
             + len(optional(root, "rollouts/nice/results.json", [])),
             "episode_attempts": sum(e["event"] == "episode_attempt" for e in events),
             "successful_updates": sum(t.get("updates", 0) for t in all_train),
+            "training_exposures": sum(t.get("exposures", 0) for t in all_train),
+            "training_batch_plan": optional(root, "training_batch/plan.json", None),
+            "parallel_nice": optional(root, "scores/parallel_summary.json", None),
             "transfer_summary": (
                 "transfer/summary.json"
                 if run.cfg.get("transfer", {}).get("enabled")
@@ -747,9 +756,49 @@ def audit(run: Run) -> dict:
             "exact_one_pass_updates",
             len(training) == design["branches"]
             and all(
-                t.get("updates") == t.get("exposures") == design["subset_size"]
+                t.get("updates")
+                == steps_per_epoch(design["subset_size"], run.cfg["training"])
+                and t.get("exposures") == design["subset_size"]
                 for t in training
             ),
+            "training/*/step_*.metrics.json",
+        )
+        if run.cfg["training"].get("micro_batch_size") == "auto":
+            try:
+                from nice_validation.batch_tuning import training_config
+
+                selected_cfg, plan_sha = training_config(run)
+                correct = all(
+                    t.get("batch_plan_sha256") == plan_sha
+                    and t.get("effective_batch") == selected_cfg["effective_batch"]
+                    and t.get("micro_batch_size") == selected_cfg["micro_batch_size"]
+                    for t in training
+                )
+            except (ValueError, OSError, KeyError):
+                correct = False
+            check(
+                "common_measured_batch_plan",
+                correct,
+                "training_batch/plan.json; training/*/training.json",
+            )
+        actual_exposures = []
+        for s in subsets:
+            metrics = [
+                read(p)
+                for p in sorted(
+                    (root / "training" / s["subset_id"]).glob("step_*.metrics.json")
+                )
+            ]
+            members = [m for row in metrics for m in metric_members(row)]
+            actual_exposures.append(
+                len(metrics)
+                == steps_per_epoch(design["subset_size"], run.cfg["training"])
+                and len(members) == len(set(members)) == design["subset_size"]
+                and set(members) == set(s["members"])
+            )
+        check(
+            "exact_metric_exposures",
+            bool(actual_exposures) and all(actual_exposures),
             "training/*/step_*.metrics.json",
         )
         check(
@@ -792,6 +841,23 @@ def audit(run: Run) -> dict:
             "logs/events.jsonl",
         )
         diagnostics = optional(root, "scores/diagnostics.json", {})
+        if run.cfg["score"].get("parallel", False):
+            parallel = optional(root, "scores/parallel_summary.json", {})
+            check(
+                "parallel_nice_coverage_and_reference",
+                parallel.get("run_identity") == run.identity
+                and parallel.get("mode") == run.cfg["mode"]
+                and parallel.get("gpu_uuids")
+                == run.cfg.get("resources", {}).get("gpu_uuids")
+                and parallel.get("candidate_count") == design["candidates"]
+                and parallel.get("validation_count") == design["validation"]
+                and sum(parallel.get("candidate_counts", [])) == design["candidates"]
+                and sum(parallel.get("validation_counts", [])) == design["validation"]
+                and parallel.get("reference_checks_passed") is True
+                and parallel.get("per_example_batch") == 1
+                and parallel.get("optimizer_updates") == 0,
+                "scores/parallel_summary.json; scores/shards/plan.json",
+            )
         check(
             "score_cache_identity",
             bool(scores)

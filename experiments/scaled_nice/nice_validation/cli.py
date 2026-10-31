@@ -35,6 +35,7 @@ def parser() -> argparse.ArgumentParser:
         "audit",
         "status",
         "train-parallel",
+        "tune-training-batch",
         "fetch-model",
         "freeze-model",
         "init-adapter",
@@ -314,6 +315,10 @@ def main(argv: list[str] | None = None) -> None:
             from nice_validation.subsets import make_subsets
 
             make_subsets(run)
+        elif command == "tune-training-batch":
+            from nice_validation.batch_tuning import tune
+
+            tune(run)
         elif command == "train-parallel":
             from nice_validation.parallel_training import train_parallel
 

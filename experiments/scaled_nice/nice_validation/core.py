@@ -119,6 +119,17 @@ def config(path: str | Path) -> dict:
         if exp["subset_size"] > size or math.comb(size, exp["subset_size"]) < 3:
             raise ValueError("Each score stratum must allow three distinct subsets")
     tr = value["training"]
+    if type(value["score"].get("parallel", False)) is not bool:
+        raise ValueError("score.parallel must be boolean")
+    for key in ["parallel_check_atol", "parallel_check_rtol"]:
+        tolerance = value["score"].get(key, 1e-6 if key.endswith("atol") else 1e-4)
+        if (
+            isinstance(tolerance, bool)
+            or not isinstance(tolerance, (float, int))
+            or not math.isfinite(tolerance)
+            or tolerance < 0
+        ):
+            raise ValueError(f"score.{key} must be finite and nonnegative")
     if value.get("schedule") == "phased-independent" and value.get("transfer", {}).get(
         "enabled"
     ):
@@ -162,8 +173,15 @@ def config(path: str | Path) -> dict:
         raise ValueError(
             "Fixed research design requires split_seed=42 and shuffle_seed=2026"
         )
-    if (tr["epochs"], tr["effective_batch"], tr["weight_decay"]) != (1, 1, 0):
-        raise ValueError("Research design requires one epoch, batch=1, weight_decay=0")
+    from nice_validation.batching import batch_spec
+
+    batch_spec(tr)
+    if (tr["epochs"], tr["weight_decay"]) != (1, 0) or (
+        design == "legacy" and tr["effective_batch"] != 1
+    ):
+        raise ValueError(
+            "Research design requires one epoch, weight_decay=0; legacy batch=1"
+        )
     if (
         value["score"]["adam_epsilon"] != tr["epsilon"]
         or value["score"]["max_grad_norm"] != tr["max_grad_norm"]
@@ -255,7 +273,15 @@ def external_identity(cfg: dict) -> dict:
 
 def environment_identity(mode: str = "real") -> dict:
     """Fingerprint installed numerical/protocol code without importing GPU libraries."""
-    packages = ["numpy", "PyYAML", "scipy", "matplotlib", "Pillow", "packaging"]
+    packages = [
+        "numpy",
+        "PyYAML",
+        "scipy",
+        "matplotlib",
+        "Pillow",
+        "packaging",
+        "psutil",
+    ]
     if mode == "real":
         packages += [
             "torch",
@@ -426,7 +452,11 @@ class Run:
                 self.cfg["model"]["gpu_uuids"]
                 if self.cfg["mode"] == "real"
                 and (
-                    name in {"score", "smoke"}
+                    (
+                        name == "smoke"
+                        or name == "score"
+                        and not self.cfg["score"].get("parallel", False)
+                    )
                     or (
                         name.startswith("train:")
                         and self.cfg.get("schedule") != "phased-independent"

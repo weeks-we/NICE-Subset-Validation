@@ -1,4 +1,4 @@
-"""Independent engineering smoke; never consumes the 510 main episodes."""
+"""Independent single-row engineering smoke; physical batches are probed later."""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ def smoke(run: Run, task_file: str | None = None) -> None:
                 runtime.parameters,
                 [row],
                 runtime.loss,
-                run.cfg["training"],
+                {**run.cfg["training"], "effective_batch": 1, "micro_batch_size": 1},
                 folder / "training",
                 digest({"run": run.identity, "purpose": "smoke"}),
                 lambda m: run.event("smoke", "optimizer_step", **m),
@@ -190,7 +190,7 @@ def smoke(run: Run, task_file: str | None = None) -> None:
                 runtime.parameters,
                 [capacity_row],
                 runtime.loss,
-                run.cfg["training"],
+                {**run.cfg["training"], "effective_batch": 1, "micro_batch_size": 1},
                 folder / "capacity",
                 digest(
                     {
@@ -267,7 +267,7 @@ def smoke(run: Run, task_file: str | None = None) -> None:
             "transfer_episode_budget": design["transfer_episodes"],
             "transfer_component_estimate_seconds": None,
             "episode_estimate_scope": "SWE-smith main tasks only; no extrapolation from a single smoke to Pro/Live/Verified/Terminal",
-            "training_trajectory_exposures": design["training_updates"],
+            "training_trajectory_exposures": design["training_exposures"],
         }
         if result.get("episode"):
             seconds = result["episode"]["wall_seconds"]

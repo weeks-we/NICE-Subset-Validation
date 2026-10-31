@@ -34,7 +34,7 @@ def small_scaled(tmp_path):
 def test_scaled_default_budgets_and_smaller_model():
     cfg = config("configs/scaled.yaml")
     assert counts(cfg) == {
-        "candidates": 3000,
+        "candidates": 2000,
         "validation": 100,
         "subset_size": 150,
         "branches": 12,
@@ -43,8 +43,9 @@ def test_scaled_default_budgets_and_smaller_model():
         "main_episodes": 1700,
         "transfer_episodes": 0,
         "all_episodes": 1700,
-        "training_updates": 1800,
-        "selection_fraction": 0.05,
+        "training_updates": 456,
+        "training_exposures": 1800,
+        "selection_fraction": 0.075,
     }
     assert cfg["model"]["id"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
     assert cfg["model"]["loader"] == "AutoModelForCausalLM"
@@ -54,6 +55,11 @@ def test_scaled_default_budgets_and_smaller_model():
         "low": (0, 333),
         "middle": (333, 666),
         "high": (666, 1000),
+    }
+    assert strata_ranges(2000) == {
+        "low": (0, 666),
+        "middle": (666, 1333),
+        "high": (1333, 2000),
     }
 
 
@@ -151,7 +157,8 @@ def test_scaled_source_resolution_never_contacts_external_benchmarks(monkeypatch
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "score", "parallel-training", "evaluate-low_11"]
+    "failure",
+    [None, "score", "training-batch-probe", "parallel-training", "evaluate-low_11"],
 )
 def test_scaled_supervisor_releases_all_inference_before_training_and_cleans_up(
     tmp_path, monkeypatch, failure
@@ -197,6 +204,7 @@ def test_scaled_supervisor_releases_all_inference_before_training_and_cleans_up(
         if name in {
             "score",
             "subsets",
+            "training-batch-probe",
             "parallel-training",
             "analyze",
             "audit",
@@ -259,7 +267,8 @@ def test_scaled_prepare_rollout_score_parallel_training_resume(tmp_path):
         sid = subset["subset_id"]
         assert run.valid("train:" + sid)
         report = read(run.root / "training" / sid / "training.json")
-        assert report["updates"] == report["exposures"] == 9
+        assert report["updates"] == 3 and report["exposures"] == 9
+        assert report["effective_batch"] == 4 and report["micro_batch_size"] == 2
         assert len(report["members"]) == 9
     original = read(run.state_path)
     with patch(

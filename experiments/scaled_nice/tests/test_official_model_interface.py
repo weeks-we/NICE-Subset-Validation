@@ -278,3 +278,98 @@ def test_official_loader_rejects_wrong_class_and_absent_config(runtime, tmp_path
         model_loader_api(wrong, cfg["model"]["path"])
     with pytest.raises((ValueError, OSError)):
         model_loader_api(cfg, tmp_path / "absent")
+
+
+def test_true_batch_padding_preserves_equal_trajectory_loss_and_gradients(runtime):
+    actual, cfg = runtime
+    short = {
+        "data_id": "short",
+        "input_ids": [5, 6, 7, 8],
+        "labels": [-100, -100, -100, 8],
+        "input_tokens": 4,
+        "supervised_tokens": 1,
+    }
+    rows = [row(), short]
+    actual.model.eval()
+    actual.model.zero_grad(set_to_none=True)
+    expected = sum(actual.loss(r) for r in rows) / 2
+    expected.backward()
+    reference = {
+        n: None if p.grad is None else p.grad.detach().clone()
+        for n, p in actual.parameters
+    }
+    actual.model.zero_grad(set_to_none=True)
+    physical_shapes = []
+    handle = actual.model.register_forward_pre_hook(
+        lambda module, args, kwargs: physical_shapes.append(
+            tuple(kwargs["input_ids"].shape)
+        ),
+        with_kwargs=True,
+    )
+    try:
+        batched = actual.loss(rows)
+        batched.backward()
+    finally:
+        handle.remove()
+    assert physical_shapes == [(2, 6)]
+    torch.testing.assert_close(
+        batched.detach(), expected.detach(), atol=1e-6, rtol=1e-6
+    )
+    for n, p in actual.parameters:
+        if reference[n] is not None:
+            torch.testing.assert_close(p.grad, reference[n], atol=2e-6, rtol=2e-4)
+    with pytest.raises(ValueError, match="supervised"):
+        actual.loss([{**short, "labels": [-100] * 4}])
+
+
+def test_parallel_feature_math_uses_only_lora_and_never_steps_optimizer(
+    runtime, tmp_path, monkeypatch
+):
+    import numpy as np
+    from types import SimpleNamespace
+    from nice_validation.core import write
+    from nice_validation.scoring import gradient_features
+    from nice_validation.score_features import candidate_feature, validation_feature
+
+    actual, cfg = runtime
+    cfg = copy.deepcopy(cfg)
+    cfg["experiment"]["rollouts"] = 4
+    view = SimpleNamespace(cfg=cfg, root=tmp_path, event=lambda *a, **k: None)
+    monkeypatch.setattr(
+        torch.optim.AdamW, "step", lambda *a, **k: pytest.fail("NICE updated weights")
+    )
+    before = {n: p.detach().clone() for n, p in actual.model.named_parameters()}
+    arrays, meta = candidate_feature(view, actual, row())
+    actual.candidate_backward(row())
+    for name, adam in [("raw", False), ("adam", True)]:
+        expected, _ = gradient_features(actual, cfg, adam=adam)
+        np.testing.assert_array_equal(arrays[name], expected)
+    with torch.no_grad():
+        nll = float(token_ce_sum(actual.model, [5, 6, 7], [8, 9]))
+    step = {
+        "model_identity": actual.identity,
+        "input_ids": [5, 6, 7],
+        "output_ids": [8, 9],
+        "sampling": {"temperature": 1, "top_p": 1, "top_k": 0},
+        "logprob_sum": -nll,
+    }
+    records = []
+    for index in range(4):
+        write(tmp_path / f"trace-{index}/trace.json", [step])
+        records.append(
+            {
+                "resolved": index % 2 == 0,
+                "status": "RESOLVED" if index % 2 == 0 else "TASK_FAILED",
+                "evidence_path": f"trace-{index}",
+            }
+        )
+    result, diagnostic = validation_feature(
+        view, actual, {"instance_id": "unit"}, records
+    )
+    actual.model.zero_grad(set_to_none=True)
+    actual.replay_backward(step, scale=0.5)
+    expected, _ = gradient_features(actual, cfg)
+    np.testing.assert_array_equal(result["validation"], expected)
+    assert diagnostic["validation_tokens"] == 10
+    assert all(torch.equal(before[n], p) for n, p in actual.model.named_parameters())
+    assert all(p.grad is None for p in actual.model.parameters() if not p.requires_grad)

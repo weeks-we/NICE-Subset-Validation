@@ -91,6 +91,9 @@ def train_parallel(run: Run):
     if not gpus:
         raise ValueError("Parallel training requires an explicit authorized GPU pool")
     validate_pool(gpus)
+    from nice_validation.batch_tuning import tune
+
+    tune(run)
     subsets = read(run.root / "manifests/subsets.json")
     repo = Path(__file__).resolve().parents[1]
     for start in range(0, len(subsets), len(gpus)):

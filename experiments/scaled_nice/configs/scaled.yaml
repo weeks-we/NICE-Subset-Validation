@@ -6,9 +6,17 @@ model:
   loader: AutoModelForCausalLM
 experiment:
   design: scaled-main-v1
-  candidates: 3000
+  candidates: 2000
   validation: 100
   subset_size: 150
+training:
+  effective_batch: 4
+  micro_batch_size: auto
+  micro_batch_candidates: [1, 2, 4]
+score:
+  parallel: true
+  parallel_check_atol: 1.0e-6
+  parallel_check_rtol: 1.0e-4
 agent:
   max_actions: 75
   budget_exhaustion_policy: grade_patch

@@ -11,6 +11,28 @@ from pathlib import Path
 import numpy as np
 
 from nice_validation.core import Run, digest, read, sha, write
+from nice_validation.batching import (
+    batch_spec,
+    backward_batch,
+    shuffled_order,
+    steps_per_epoch,
+    metric_members,
+)
+
+
+def batch_metric(rows, step, cfg):
+    effective, micro = batch_spec(cfg)
+    return {
+        "step": step,
+        "data_id": rows[0]["data_id"],
+        "data_ids": [r["data_id"] for r in rows],
+        "batch_size": len(rows),
+        "effective_batch": effective,
+        "micro_batch_size": micro,
+        "micro_batches": (len(rows) + micro - 1) // micro,
+        "supervised_tokens": sum(r["supervised_tokens"] for r in rows),
+        "logical_input_tokens": sum(r["input_tokens"] for r in rows),
+    }
 
 
 def save_checkpoint(path: Path, state: dict, identity: str) -> None:
@@ -57,8 +79,16 @@ def sft_steps(
     """Publish adapter/optimizer/RNG/order at each complete optimizer boundary."""
     import torch
 
-    order = sorted(range(len(rows)), key=lambda i: rows[i]["data_id"])
-    random.Random(2026).shuffle(order)
+    effective, micro = batch_spec(cfg)
+    if micro == "auto":
+        raise ValueError("Resolve the measured micro-batch plan before SFT")
+    contract = {
+        "effective_batch": effective,
+        "micro_batch_size": micro,
+        "objective": "mean-of-trajectory-token-means-v1",
+    }
+    order = shuffled_order(rows)
+    total_steps = steps_per_epoch(len(rows), cfg)
     random.seed(2026)
     np.random.seed(2026)
     torch.manual_seed(2026)
@@ -99,12 +129,16 @@ def sft_steps(
                     "Published checkpoint chain identity/step/checksum mismatch"
                 )
         saved = load_checkpoint(checkpoints[-1], identity)
-        if saved["step"] != len(checkpoints) or not 0 <= saved["step"] <= len(rows):
+        if saved["step"] != len(checkpoints) or not 0 < saved["step"] <= total_steps:
             raise ValueError(
                 "Checkpoint optimizer boundary differs from the published step chain"
             )
         if saved["order"] != order:
             raise ValueError("Checkpoint data order mismatch")
+        if saved.get("batch_contract") != contract or saved.get("samples_seen") != min(
+            saved["step"] * effective, len(rows)
+        ):
+            raise ValueError("Checkpoint batch contract/sample cursor mismatch")
         for name, param in parameters:
             param.data.copy_(saved["adapter"][name].to(param.device))
         optimizer.load_state_dict(saved["optimizer"])
@@ -121,14 +155,11 @@ def sft_steps(
                 {**saved["metric"], "checkpoint_sha256": sha(checkpoints[-1])},
             )
     metrics = []
-    for index in range(start, len(rows)):
-        row = rows[order[index]]
+    for index in range(start, total_steps):
+        batch = [rows[i] for i in order[index * effective : (index + 1) * effective]]
         start_time = time.monotonic()
         intent = {
-            "step": index + 1,
-            "data_id": row["data_id"],
-            "supervised_tokens": row["supervised_tokens"],
-            "logical_input_tokens": row["input_tokens"],
+            **batch_metric(batch, index + 1, cfg),
             "identity": identity,
         }
         write(
@@ -137,13 +168,8 @@ def sft_steps(
         if on_intent:
             on_intent(intent)
         optimizer.zero_grad(set_to_none=True)
-        model.train()
-        loss = loss_function(row)
-        if not torch.isfinite(loss):
-            raise ValueError("Nonfinite training loss; branch stopped")
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            [p for _, p in parameters], cfg["max_grad_norm"], error_if_nonfinite=True
+        loss, grad_norm, padding = backward_batch(
+            model, parameters, batch, loss_function, cfg
         )
         optimizer.step()
         if any(not bool(torch.isfinite(p).all()) for _, p in parameters):
@@ -151,19 +177,18 @@ def sft_steps(
                 "Nonfinite adapter after update; branch stopped before checkpoint publication"
             )
         metric = {
-            "step": index + 1,
-            "data_id": row["data_id"],
-            "loss": float(loss.detach()),
+            **batch_metric(batch, index + 1, cfg),
+            "loss": loss,
             "grad_norm": float(grad_norm),
             "learning_rate": cfg["learning_rate"],
-            "supervised_tokens": row["supervised_tokens"],
-            "logical_input_tokens": row["input_tokens"],
-            "padding_tokens": 0,
+            "padding_tokens": padding,
             "packed_tokens": 0,
             "wall_seconds": time.monotonic() - start_time,
         }
         state = {
             "step": index + 1,
+            "samples_seen": min((index + 1) * effective, len(rows)),
+            "batch_contract": contract,
             "adapter": {n: p.detach().cpu().clone() for n, p in parameters},
             "optimizer": optimizer.state_dict(),
             "order": order,
@@ -181,7 +206,7 @@ def sft_steps(
         metrics.append(metric)
         if stop_after and index + 1 >= stop_after:
             return {"status": "paused_at_step_boundary", "updates": index + 1}
-    return {"status": "completed", "updates": len(rows)}
+    return {"status": "completed", "updates": total_steps, "exposures": len(rows)}
 
 
 def train(run: Run, subset_id: str) -> None:
@@ -192,6 +217,9 @@ def train(run: Run, subset_id: str) -> None:
     if len(matches) != 1:
         raise ValueError(f"Unknown subset: {subset_id}")
     subset = matches[0]
+    from nice_validation.batch_tuning import training_config
+
+    training_cfg, plan_sha = training_config(run)
     with run.stage("train:" + subset_id) as out:
         if out is None:
             return
@@ -202,18 +230,22 @@ def train(run: Run, subset_id: str) -> None:
             if r["data_id"] in subset["members"]
         ]
         start = time.monotonic()
+        if len(rows) != len(set(subset["members"])) or {
+            r["data_id"] for r in rows
+        } != set(subset["members"]):
+            raise ValueError("Training subset members are missing or duplicated")
         if run.cfg["mode"] == "mock":
             # Explicit synthetic lifecycle; not a claim of model optimization.
             initial = "mock-common-adapter-v1"
-            for i, row in enumerate(sorted(rows, key=lambda r: r["data_id"])):
+            order = shuffled_order(rows)
+            effective, _ = batch_spec(training_cfg)
+            for i in range(steps_per_epoch(len(rows), training_cfg)):
+                batch = [rows[j] for j in order[i * effective : (i + 1) * effective]]
                 metric = {
-                    "step": i + 1,
-                    "data_id": row["data_id"],
+                    **batch_metric(batch, i + 1, training_cfg),
                     "loss": None,
                     "grad_norm": None,
                     "learning_rate": run.cfg["training"]["learning_rate"],
-                    "supervised_tokens": row["supervised_tokens"],
-                    "logical_input_tokens": row["input_tokens"],
                     "padding_tokens": 0,
                     "mode": "mock",
                 }
@@ -239,6 +271,8 @@ def train(run: Run, subset_id: str) -> None:
                     "subset": subset,
                     "initial": initial,
                     "rows": rows,
+                    "training": training_cfg,
+                    "batch_plan_sha256": plan_sha,
                 }
             )
             sft_steps(
@@ -246,7 +280,7 @@ def train(run: Run, subset_id: str) -> None:
                 runtime.parameters,
                 rows,
                 runtime.loss,
-                run.cfg["training"],
+                training_cfg,
                 folder,
                 identity,
                 lambda m: run.event(
@@ -264,9 +298,12 @@ def train(run: Run, subset_id: str) -> None:
             runtime.close()
         metrics = [read(p) for p in sorted(folder.glob("step_*.metrics.json"))]
         subset_size = run.cfg["experiment"]["subset_size"]
+        seen = [member for metric in metrics for member in metric_members(metric)]
+        updates = steps_per_epoch(subset_size, training_cfg)
         if (
-            len(metrics) != subset_size
-            or len({r["data_id"] for r in metrics}) != subset_size
+            len(metrics) != updates
+            or not len(seen) == len(set(seen)) == subset_size
+            or set(seen) != set(subset["members"])
         ):
             raise ValueError("One-pass exposure/update audit failed")
         report = {
@@ -275,8 +312,14 @@ def train(run: Run, subset_id: str) -> None:
             "mode": run.cfg["mode"],
             "initial_adapter_sha256": initial,
             "final_adapter_sha256": adapter_identity,
-            "updates": subset_size,
+            "updates": updates,
             "exposures": subset_size,
+            "effective_batch": training_cfg.get("effective_batch", 1),
+            "micro_batch_size": training_cfg.get("micro_batch_size", 1),
+            "gradient_accumulation_steps": training_cfg.get("effective_batch", 1)
+            // training_cfg.get("micro_batch_size", 1),
+            "loss_reduction": "mean-of-trajectory-token-means-v1",
+            "batch_plan_sha256": plan_sha,
             "members": subset["members"],
             "supervised_tokens": sum(m["supervised_tokens"] for m in metrics),
             "wall_seconds": time.monotonic() - start,

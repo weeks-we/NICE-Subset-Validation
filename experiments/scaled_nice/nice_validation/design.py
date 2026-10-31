@@ -1,5 +1,7 @@
 """Counts derived from the independently frozen experiment configuration."""
 
+import math
+
 
 def counts(cfg: dict) -> dict:
     exp = cfg["experiment"]
@@ -21,7 +23,9 @@ def counts(cfg: dict) -> dict:
         "main_episodes": nice + evaluation,
         "transfer_episodes": transfer,
         "all_episodes": nice + evaluation + transfer,
-        "training_updates": branches * exp["subset_size"],
+        "training_updates": branches
+        * math.ceil(exp["subset_size"] / cfg["training"]["effective_batch"]),
+        "training_exposures": branches * exp["subset_size"],
         "selection_fraction": exp["subset_size"] / exp["candidates"],
     }
 

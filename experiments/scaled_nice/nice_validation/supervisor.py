@@ -302,6 +302,12 @@ def run_server(
                 command(storage, "score", executable + ["score"], env)
                 command(storage, "subsets", executable + ["make-subsets"], env)
                 command(
+                    storage,
+                    "training-batch-probe",
+                    executable + ["tune-training-batch"],
+                    env,
+                )
+                command(
                     storage, "parallel-training", executable + ["train-parallel"], env
                 )
                 for i, service_file in enumerate(service_files):

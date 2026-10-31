@@ -108,6 +108,10 @@ def gradient_features(
 
 
 def score(run: Run) -> None:
+    if run.cfg["score"].get("parallel", False):
+        from nice_validation.parallel_scoring import score_parallel
+
+        return score_parallel(run)
     if not run.valid("prepare-data") or not run.valid("rollout-nice"):
         raise ValueError("Complete prepare-data and rollout-nice first")
     with run.stage("score") as out:
