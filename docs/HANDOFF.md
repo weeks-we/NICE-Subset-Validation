@@ -59,6 +59,26 @@ Claude 先从旧启动命令、生成配置或 `controller/completion.json` 定�
 
 只复用基座/tokenizer、原始数据、下载缓存与已有 Docker 镜像层。重新建立初始 LoRA、数据清洗与划分、NICE rollout/梯度、选样、SFT、选权重与最终结果。不要整体链接旧 data、models 或 runs：这些目录还包含旧 adapter、任务映射和来源快照。
 
+## 找不到资源时的恢复预案
+
+以下步骤由服务器 Claude 自主执行；普通查路径、补齐下载、修依赖和重启不需要师兄逐条代操作。区分脚本已实现的自动行为与需要 Claude 排查的步骤：
+
+| 情况 | 恢复方式 |
+|---|---|
+| 不知道旧 storage 在哪里 | Claude 先查旧启动命令、旧 clone 的生成配置及 controller/completion.json，再核对 data/source_revisions.json；示例路径不是实际路径。找到旧根后传 --reuse-from。 |
+| 旧数据路径失效 | 脚本尝试旧 storage 相对路径、data 下原文件名，按锁和 checksum 验证，不凭文件名认定同一数据。 |
+| 训练轨迹、Smith 任务或 Verified 数据文件彻底缺失 | 首次准备时脚本自动使用旧来源锁的 ID/revision，在新 storage 下载完整对应 split。使用缓存并记录 missing 原因，不回写旧文件、不悄悄切到 main 最新版。缺少旧 raw 锁条目但 source_revisions 仍完整时同样能下载。 |
+| 旧文件只有部分数据 | 脚本在新目录补齐同 revision 的完整 split；候选/验证/benchmark 仍由原规则重新划分，不拿前缀凑分母。 |
+| 下载断网或导出中断 | Claude 检查代理、DNS、证书、空间与源可达性，修复后重跑原入口；HF 分片缓存与带来源锁的 JSONL partial 可恢复并核对已导出前缀。不得无来源地拼接文件；同类基础设施错误最多两次重试，不能无限循环。 |
+| 找不到模型 | 先查旧 snapshot、model_lock 和原 HF 缓存，必要时 --model-path 指向已核验目录。多份匹配时核实版本后明确选择。确实不存在时才按旧模型 ID/完整 revision，利用项目 fetch-model/freeze-model 流程恢复到新目录；不得因此替换模型或复制旧训练 adapter 充当基座。 |
+| benchmark/验证任务镜像缺失 | 任务原始数据与 Docker 镜像分开处理。脚本先查本地镜像，缺失会拉取；拉取失败由 Claude 修网络/磁盘/Docker，必要时依据固定官方 harness 配方构建，再重跑环境准备。不能换题、缩减100题或把环境失败当模型答错。 |
+| 原数据/模型存在但 checksum、来源锁或 sidecar 冲突 | 保留冲突文件和日志，先查备份、固定源与下载记录，不能静默替换坏证据继续。确认来源后在新目录准备干净副本；若已冻结研究运行，必须遵守下面的恢复身份要求。 |
+| 旧 revision 或可信来源记录找不到 | Claude 查旧 snapshot、raw sidecar、model_lock 与缓存元数据恢复真实完整 commit；无法核实则报告缺失字段、已查路径和影响，不编造 revision、不直接切最新版本冒充原输入。 |
+
+已冻结运行的输入路径/文件损坏或丢失时，优先恢复原路径及原 checksum，再按原命令继续。不能为了绕过失败修改 snapshot、来源锁、校验和或已选任务；无法恢复一致身份时保留证据，使用新 storage/config-dir 从头运行，不能把旧分支与新输入混用。
+
+恢复后必须重新通过对应来源/环境预检与必要 smoke 才继续。新下载文件必须有源 ID/revision/split/完整条数/checksum；模型核验实际架构与加载接口；任务容器保持官方判分。最终将处理经过写入日志，返回最终 zip/completion；如果仍因权限、凭据、源下线或容量阻塞，返回具体原因和证据路径，不伪造完成结果。
+
 ## 唯一正式启动入口
 
 Linux、Python 3.12+、Git、Docker daemon、NVIDIA 驱动和兼容 CUDA PyTorch 必须可用。确认授权 GPU 可用；不要通过 kill 所有 Python 或全局 Docker prune 清资源。新 clone、新 venv、新 storage/config-dir；旧目录继续保留。

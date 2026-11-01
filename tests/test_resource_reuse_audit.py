@@ -82,6 +82,39 @@ def test_ambiguous_relocated_models_require_explicit_path(tmp_path):
     assert config(paths["server_config"])["model"]["path"] == str(model.resolve())
 
 
+@pytest.mark.parametrize("kind,old_file,split,revision", [
+    ("training", "training", "tool", "a" * 40),
+    ("validation", "verified", "test", "e" * 40),
+    ("smith", "validation", "train", "b" * 40),
+])
+def test_missing_old_source_is_downloaded_at_its_original_revision(tmp_path, kind, old_file, split, revision):
+    old, model = old_storage(tmp_path)
+    missing = old / "data" / (old_file + ".jsonl")
+    missing.unlink()
+    before = {str(p): sha(p) for p in old.rglob("*") if p.is_file()}
+    storage = tmp_path / "new"
+    paths = configure(storage, pool(), tmp_path / "cfg", reuse_from=old)
+    cfg = config(paths["server_config"])
+    target = storage / "data" / (kind + ".jsonl")
+    assert cfg["data"][kind + "_path"] == str(target)
+    decision = read(storage / "data/reuse.json")["raw_source_actions"][kind]
+    assert decision["reason"] == "old raw file missing" and decision["revision"] == revision
+    calls = []
+    def fetch(identifier, pin, requested_split, destination, mode, execute, caches):
+        calls.append((pin, requested_split, destination))
+        assert pin == revision and requested_split == split and destination == target
+        destination.write_text('{"fixture":true}\n', encoding="utf-8")
+        result = {"id": identifier, "revision": pin, "split": requested_split, "limit": None,
+                  "records": 1, "sha256": sha(destination), "path": str(destination), "files": []}
+        write(destination.with_suffix(".jsonl.source.json"), result)
+        return result
+    with patch("nice_validation.acquire.hf_split", fetch):
+        acquire(cfg)
+    assert calls == [(revision, split, target)]
+    assert not missing.exists()
+    assert before == {str(p): sha(p) for p in old.rglob("*") if p.is_file()}
+
+
 @pytest.mark.parametrize("problem", ["valid", "missing", "corrupt", "wrong_id", "prefix", "missing_revision"])
 def test_prepared_preflight_checks_the_smith_task_source(tmp_path, monkeypatch, problem):
     import types

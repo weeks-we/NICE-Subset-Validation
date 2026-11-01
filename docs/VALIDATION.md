@@ -1,5 +1,13 @@
 # 本地验证记录
 
+## 2026-11-01 缺失资源恢复预案
+
+- 补齐首次准备时旧 raw 文件彻底缺失的下载兜底：训练轨迹、Verified test、Smith train 逐项保持旧 ID/revision，在新 storage 下载完整 split。旧文件存在但校验冲突仍保留并停止；版本或来源证据不明时不切 latest。
+- 新增 3 个实际删除旧 fixture 文件的回归，核验只下载缺失来源、使用原 revision、新路径与旧残存文件 checksum 不变。HANDOFF 新增资源找不到、下载中断、模型定位、镜像拉取/构建、来源证据冲突与冻结运行恢复规则，并明确脚本自动行为和 Claude 的排查分工。
+- 独立环境全量 **341 passed，0 failed，0 skipped，306.70 秒**。日志 `runs/a-fallback-pytest-20261101.log`。
+- 新全尺寸 mock 2060 episode、256 更新、2048 曝光通过；独立串行 2000 分数及 20 方向一致，4040 缓存恢复不变，audit 无 FAIL，zip CRC/checksum 通过，合成包 1,443,083 字节。PNG 与此前已人工复核产物逐文件一致，布局审计通过。
+- 证据见 `runs/a-fallback-full-20261101/validation_checks.json`、`runs/a-fallback-verification-20261101.log`、`runs/verify_fallback_20261101.py`。本地报告 `runs/FALLBACK_VALIDATION_20261101.md`。未进行真实模型/GPU/Docker 或公网大文件下载，未 commit/push；配置及数据版本策略不变。
+
 ## 2026-11-01 资源定位与全流程再复核
 
 研究配置与既有数据版本策略保持不变；不自动切换上游最新 revision。复核启动、依赖、来源定位、清洗与集合隔离、NICE/LoRA、四分支与阶段选择、benchmark/原题复测、进程回收和交付。

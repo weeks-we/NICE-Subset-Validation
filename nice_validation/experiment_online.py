@@ -41,6 +41,8 @@ def locate_old_raw(old, entry, kind):
         path = (old / "data" / recorded.name).resolve()
         if not path.is_relative_to(old):
             raise ValueError("Relocated raw source escaped old storage: " + kind)
+        if not path.exists():
+            return None  # Keep the pinned revision and acquire into new storage.
     if not path.is_file() or sha(path) != entry["sha256"]:
         raise ValueError("Old raw source checksum mismatch: " + kind)
     sidecar = path.with_suffix(path.suffix + ".source.json")
@@ -161,7 +163,10 @@ def configure(storage, gpus, destination, reuse_from=None, model_path=None, port
                 raise ValueError("Ambiguous old raw source " + kind)
             if matches:
                 previous = locate_old_raw(old, matches[0], kind)
-                if matches[0].get("limit") is None:
+                if previous is None:
+                    raw_reuse[kind] = {"action": "download_full_pinned_split", "reason": "old raw file missing",
+                        "old_path": matches[0]["path"], "revision": records[kind]["revision"]}
+                elif matches[0].get("limit") is None:
                     target = previous
                     raw_reuse[kind] = {"action": "reuse", "path": str(previous),
                         "revision": records[kind]["revision"], "records": matches[0].get("records"),
