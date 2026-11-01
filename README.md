@@ -1,6 +1,6 @@
 # NICE-Subset-Validation
 
-当前仅保留师兄 A 的实验入口。完整服务器交接见 [HANDOFF](docs/HANDOFF.md)，配置权威为 [main.yaml](configs/main.yaml)。
+完整服务器交接见 [HANDOFF](docs/HANDOFF.md)，配置权威为 [main.yaml](configs/main.yaml)。
 
 | 项目 | 当前设计 |
 |---|---|
