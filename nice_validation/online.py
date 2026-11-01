@@ -105,6 +105,9 @@ def configure_server(
     model_path: Path | None = None,
     port: int = 8765,
     service_gpus: list[str] | None = None,
+    base_config: Path | None = None,
+    model_id: str | None = None,
+    model_loader: str | None = None,
 ) -> dict:
     """Generate local configs and a metadata lock; no weights or GPU imports."""
     from nice_validation.gpus import validate_pool
@@ -116,7 +119,29 @@ def configure_server(
     if not 1 <= port <= 65535 or port + len(inference_gpus) - 1 > 65535:
         raise ValueError("Invalid service port")
     storage, destination = storage.resolve(), destination.resolve()
-    cfg = config(Path(__file__).resolve().parent.parent / "configs/main.yaml")
+    cfg = config(
+        base_config or Path(__file__).resolve().parent.parent / "configs/legacy.yaml"
+    )
+    if model_id:
+        cfg["model"]["id"] = model_id
+    if model_loader:
+        cfg["model"]["loader"] = model_loader
+    if not cfg["model"].get("id"):
+        raise ValueError(
+            "Model is pending: explicitly select --model-id before online preparation"
+        )
+    phased = cfg.get("schedule") == "phased-independent"
+    authorized_gpus = [train_gpu, *inference_gpus]
+    if phased:
+        if cfg.get("transfer", {}).get("enabled"):
+            raise ValueError(
+                "Independent scaled schedule is main-only; disable transfer"
+            )
+        inference_gpus = [*inference_gpus, train_gpu]
+        if port + len(inference_gpus) - 1 > 65535:
+            raise ValueError("Invalid phased service port range")
+        if not cfg["model"].get("loader"):
+            raise ValueError("Explicitly select --model-loader for the pending model")
     local_model = None
     if model_path and model_path.exists():
         lock = model_path / "model_lock.json"
@@ -139,7 +164,9 @@ def configure_server(
         if not local_model.get("files"):
             raise ValueError("Existing model lock has no file evidence")
     chosen_model = (
-        model_path.resolve() if model_path else storage / "models/Qwen3.8-27B"
+        model_path.resolve()
+        if model_path
+        else storage / "models" / ("base" if phased else "Qwen3.8-27B")
     )
     if (storage / "runs/main").is_relative_to(chosen_model):
         raise ValueError("Model directory cannot contain experiment outputs")
@@ -178,18 +205,17 @@ def configure_server(
         require_commit(records[kind]["revision"], kind + ".revision")
     cfg["execution"] = "server"
     cfg["resources"] = {
-        "gpu_count": 1 + len(inference_gpus),
-        "gpu_uuids": [train_gpu, *inference_gpus],
-        "layout": "one-gradient-rest-inference",
+        "gpu_count": len(authorized_gpus),
+        "gpu_uuids": authorized_gpus,
+        "layout": "phased-independent" if phased else "one-gradient-rest-inference",
+        "inference_gpu_uuids": inference_gpus,
     }
     cfg["output"] = str(storage / "runs/main")
     cfg["model"].update(
         {
             "revision": records["model"]["revision"],
-            "path": str(
-                model_path.resolve() if model_path else storage / "models/Qwen3.8-27B"
-            ),
-            "loader": "AutoModelForImageTextToText",
+            "path": str(chosen_model),
+            "loader": cfg["model"].get("loader") or "AutoModelForImageTextToText",
             "gpu_uuids": [train_gpu],
             "adapter_path": str(storage / "models/initial_adapter"),
         }
@@ -320,6 +346,9 @@ def prepare_online(
     recover_lock: bool = False,
 ) -> Run:
     """Acquire all external inputs before constructing the immutable Run."""
+    if cfg["experiment"].get("design") == "verified-selection-v1":
+        from nice_validation.experiment_online import prepare_online as prepare_new
+        return prepare_new(cfg, download_model=download_model)
     server_only(cfg)
     from nice_validation.preflight import preflight
     from nice_validation.environments import official_identity, prepare_environments
@@ -370,6 +399,10 @@ def prepare_online(
 def run_online(cfg: dict, recover_lock: bool = False) -> None:
     """Continue through the existing smoke/training/evaluation pipeline."""
     server_only(cfg)
+    if cfg.get("schedule") == "phased-independent":
+        raise ValueError(
+            "Use scripts/run_scaled_server.py to coordinate phased GPU ownership"
+        )
     from nice_validation.preflight import preflight
     from nice_validation.smoke import smoke
     from nice_validation.cli import pipeline

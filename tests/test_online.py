@@ -26,7 +26,7 @@ GPU_B = GPU_A.replace("a", "b")
 
 
 def records():
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     return {
         "training": {"id": cfg["data"]["training_id"], "revision": "a" * 40},
         "validation": {"id": cfg["data"]["validation_id"], "revision": "b" * 40},
@@ -121,7 +121,7 @@ def test_resolver_pins_all_four_sources_without_weights(monkeypatch):
         "urllib.request.urlopen",
         side_effect=lambda *a, **k: io.BytesIO(json.dumps({"sha": "d" * 40}).encode()),
     ):
-        cfg = config("configs/main.yaml")
+        cfg = config("configs/legacy.yaml")
         cfg["transfer"]["enabled"] = False
         assert resolve_sources(cfg) == {
             k: records()[k]
@@ -359,7 +359,7 @@ def test_online_prepare_to_processing_and_existing_pipeline(tmp_path, monkeypatc
 @pytest.mark.parametrize("function", [prepare_online, run_online])
 def test_online_commands_refuse_local_execution(function):
     with pytest.raises(ValueError, match="execution: server"):
-        function(config("configs/main.yaml"))
+        function(config("configs/legacy.yaml"))
 
 
 def test_replacement_keeps_development_task_outside_main_validation(tmp_path):

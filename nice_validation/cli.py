@@ -34,6 +34,8 @@ def parser() -> argparse.ArgumentParser:
         "make-subsets",
         "audit",
         "status",
+        "train-parallel",
+        "tune-training-batch",
         "fetch-model",
         "freeze-model",
         "init-adapter",
@@ -128,6 +130,11 @@ def refresh_analysis(run: Run) -> None:
 
 
 def pipeline(run: Run) -> None:
+    if run.cfg["experiment"].get("design") == "verified-selection-v1":
+        from nice_validation.experiment import pipeline as new_pipeline
+        return new_pipeline(run)
+    if run.cfg["mode"] == "real" and run.cfg.get("schedule") == "phased-independent":
+        raise ValueError("Phased GPU ownership requires scripts/run_scaled_server.py")
     from nice_validation.analysis import analyze, audit
     from nice_validation.data import prepare
     from nice_validation.harness import episodes
@@ -147,9 +154,17 @@ def pipeline(run: Run) -> None:
     score(run)
     make_subsets(run)
     episodes(run, "initial", nice=False)
-    for subset in read(run.root / "manifests/subsets.json"):
-        train(run, subset["subset_id"])
-        episodes(run, subset["subset_id"], nice=False)
+    subsets = read(run.root / "manifests/subsets.json")
+    if run.cfg.get("schedule") == "phased-independent" and run.cfg.get("resources"):
+        from nice_validation.parallel_training import train_parallel
+
+        train_parallel(run)
+        for subset in subsets:
+            episodes(run, subset["subset_id"], nice=False)
+    else:
+        for subset in subsets:
+            train(run, subset["subset_id"])
+            episodes(run, subset["subset_id"], nice=False)
     if run.cfg.get("transfer", {}).get("enabled"):
         from nice_validation.transfer import evaluate_transfer
         from nice_validation.transfer_analysis import analyze_transfer
@@ -173,6 +188,11 @@ def main(argv: list[str] | None = None) -> None:
         if args.output:
             cfg["output"] = args.output
         command = args.command
+        if cfg["experiment"].get("design") == "verified-selection-v1" and command in {"analyze", "audit"}:
+            from nice_validation.experiment_report import report
+            report(Run(cfg))
+            print(f"{command}: completed; output={cfg['output']}")
+            return
         if command in {"prepare-online", "run-online"}:
             from nice_validation.online import prepare_online, run_online
 
@@ -221,9 +241,9 @@ def main(argv: list[str] | None = None) -> None:
         if command == "fetch-data":
             from nice_validation.data import fetch_data
 
-            if args.limit is not None and args.limit < 300:
+            if args.limit is not None and args.limit < cfg["experiment"]["candidates"]:
                 raise ValueError(
-                    "Use a limit >=300; cleaning may require more raw records"
+                    f"Use a limit >={cfg['experiment']['candidates']}; cleaning may require more raw records"
                 )
             result = fetch_data(cfg, args.mode, args.limit, False)
             print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -303,6 +323,14 @@ def main(argv: list[str] | None = None) -> None:
             from nice_validation.subsets import make_subsets
 
             make_subsets(run)
+        elif command == "tune-training-batch":
+            from nice_validation.batch_tuning import tune
+
+            tune(run)
+        elif command == "train-parallel":
+            from nice_validation.parallel_training import train_parallel
+
+            train_parallel(run)
         elif command == "train":
             from nice_validation.training import train
 

@@ -1,86 +1,40 @@
 # NICE-Subset-Validation
 
-检验单个初始 checkpoint 上的 NICE 型数据评分，能否预测短期 LoRA SFT 后的 Coding Agent 收益。项目自包含，不依赖本机的 RSI 仓库。
+当前仅保留师兄 A 的实验入口。完整服务器交接见 [HANDOFF](docs/HANDOFF.md)，配置权威为 [main.yaml](configs/main.yaml)。
 
-固定设计：从 SWE-smith trajectories 选 300 条成功轨迹，从 SWE-smith 任务源独立保留 30 道主 validation，每题 4 次 NICE rollout；高、中、低、全池随机各 3 个 30 条子集。12 个分支从同一 adapter 独立训练一遍。另冻结 SWE-bench Verified、Pro Public V2、Live（Python full 快照）、Terminal-Bench 2.0 各 50 题，用于初始模型与 12 个训练后模型的迁移评测。合计 510 次主集 + 2600 次迁移 = **3110 次 Agent episode**，360 次训练曝光。smoke、基础设施重试和纯补丁重判另计。详见 [TRANSFER.md](docs/TRANSFER.md)。
+| 项目 | 当前设计 |
+|---|---|
+| 基座 | 复用原固定版本 Qwen/Qwen3.8-27B 与 tokenizer，BF16 LoRA |
+| 候选 | 原 SWE-smith trajectories/tool 来源，清洗后 2000 条 |
+| 选样 | NICE 分数升序二等分，各 1000；高低各抽 512，sampling seed=11 |
+| NICE | Verified/test 20 题，每题 8 次，共 160 rollout；仅 LoRA 梯度，8 卡独立分片 |
+| SFT | 高低 × lr=1e-6/5e-6，共 4 分支；每分支 512 条、1 epoch、有效 batch=8 |
+| 阶段权重 | 1/4、1/2、完整训练，即 128/256/512 条曝光、16/32/64 次更新，共 12 份 |
+| SFT 选权重 | SWE-smith 未入候选池的成功轨迹 ID 对应的独立 100 题；每分支选 1 份，平分选更早节点 |
+| 最终 benchmark | 与 NICE 20 题隔离的另外 100 个 Verified 任务；initial+4 个选中权重，共 500 episode |
+| NICE 原题复测 | initial+4 个选中权重对原 20 题各 greedy 运行一次，共 100；单独报告，仅作诊断 |
+| 总正式工作量 | NICE 160 + SFT 验证 1300（含 initial）+ benchmark 500 + NICE 原题复测 100 = 2060 episode；256 次 SFT 更新 |
+| 协议 | 75 轮，32768/262144 输出 token，上下文 131072，墙钟 3600 秒，单工具 300 秒 |
+| GPU | 默认 8×H200-144GB；4 分支并行训练并同步验证节点，结束后全卡推理；每卡一个服务、两个任务槽 |
 
-本地实现包含数据获取与冻结、消息校验、assistant 掩码、奖励梯度、流式投影评分、预算条件抽样、独立 SFT、步骤检查点、LangChain 工具路由、持久 Docker shell、官方 SWE-bench 判分、CSV/PNG/PDF、状态和审计。少量真实样本及官方架构的CPU接口已验证；**27B目标权重、完整真实训练和容器判分尚待服务器实测。** Mock 的分数、训练和成功率均为合成值，不能用于研究结论。
+SWE-smith 数据卡正文提及最初 5017 条训练轨迹，但当前 tool split 元数据已更大；本实验优先沿用服务器此前冻结的原始版本，不会冒称当前所有数据都是最初 5k。原四套迁移 benchmark 关闭。
 
-NICE对训练候选及主验证轨迹都只提取LoRA梯度，基座冻结；评分不更新参数，后续SFT也仅更新LoRA。主任务与Pro补丁固定对比任务起点commit，保留Agent已提交的改动及补丁字节；Pro重判还核对相同的仓库起点。
+服务器从新的 clone 目录、新 venv 启动，复用旧模型和原始数据：
 
-## 本地运行
+```bash
+python scripts/run_server.py --storage-root /data/nice-a-verified-v2 --reuse-from /data/旧实验存储根 --config-dir configs/server-a-v2 --execute-server
+```
 
-Python 3.11 或更高版本。在仓库根目录执行：
+`--reuse-from` 指旧 storage 根，不是旧 Git 目录。必要时另加 `--model-path /实际模型目录`。复用核验包含 model_lock.json、固定 revision 和原始数据 sidecar/checksum。新实验的初始 LoRA、清洗/抽样、评分、训练和结果重新生成。旧模型目录不写入，权重不复制也不重复下载；新进程仍需从磁盘装入 GPU。
 
-```powershell
-python -m pip install -e ".[dev]"
+本机验证，不触及目标权重或 GPU：
+
+```bash
+python -m pip install -e '.[dev]'
 python -m pytest -q
-python -m nice_validation --config configs/development.yaml doctor
-python -m nice_validation --config configs/development.yaml run --profile mock
-python -m nice_validation --config configs/development.yaml status
+python -m nice_validation --config configs/mock.yaml --output runs/a-mock-check run --profile mock
 ```
 
-CPU 小模型测试使用本地随机初始化的 PyTorch 模型，不下载 checkpoint。需要 PyTorch 的测试在缺少该依赖时应先安装 CPU 版 PyTorch；本地已测环境见 [requirements/local-tested.txt](requirements/local-tested.txt)。普通 mock 流程不需要模型库、GPU、Docker或网络。
+mock 所有成绩均为合成验证。完整真实权重、8 卡显存、任务容器与官方判分尚需服务器 preflight/smoke；自动停止具体失败，不以 mock 顶替。
 
-产物位于 `runs/mock/`。打开 `report.md`、`audit.md`、`tables/` 和 `figures/`。审计的 `formal_evidence: WARN` 表示这是显式合成验证。`success_rate`、`delta` 和正式相关性保持 null；演示值使用单独的 `synthetic_demo_*` 字段。图上也有合成标记。
-
-重复运行会验证已完成产物的 SHA256。配置、源码或冻结输入变化时拒绝复用原运行目录。分析不完整运行时，缺失题不会被当作失败凑分母。补齐运行后使用 `analyze --refresh` 保留旧报告并重新汇总。
-
-## 服务器运行
-
-默认使用 **8张GPU**（目标8×H200），可用 `--num-gpus 4` 等调整，至少2张。自动分配1张梯度/训练卡及N−1张独立推理卡；8卡时主任务与四套benchmark使用7个推理副本并行。梯度评分和12分支训练仍单卡顺序执行。可用 `--gpu-uuids <UUID1> <UUID2> ...` 指定授权范围，未指定则发现可见设备，不足卡数会报错。详见 [HANDOFF.md](docs/HANDOFF.md)。
-
-完整托管优先按 [HANDOFF.md](docs/HANDOFF.md) 使用 `python scripts/run_server.py --storage-root <目录> --execute-server`，默认8卡；调整卡数增加 `--num-gpus N`。该入口自动安装、在线准备、管理所有推理服务、运行smoke与全部实验，再停止自建服务、审计和打包。Claude Code可按handoff连续执行与排错。代码分块及测试映射见 [DATAFLOW.md](docs/DATAFLOW.md)。
-
-首次在线准备由单入口串联 [在线流程](docs/ONLINE.md)：配置生成、固定来源、下载、清洗、adapter与镜像准备、服务、真实smoke和主实验。提供实际存储目录与授权GPU范围，默认8卡，无需手工复制数据或逐项抄版本号。
-
-下列为分步操作方式，用于排查或已有配置的服务器；首次在线准备按上述 ONLINE 文档执行即可。手工配置时先读 [docs/HANDOFF.md](docs/HANDOFF.md)，复制 `configs/server.example.yaml` 为被 Git 忽略的 `configs/server.local.yaml`，填写真实路径、完整 GPU UUID、三个 Hugging Face revision 和 SWE-bench commit。占位配置会被执行器拒绝。
-
-```bash
-python -m pip install -e '.[server,dev]'
-python scripts/resolve_sources.py --output data/source_revisions.json
-python -m nice_validation --config configs/server.local.yaml doctor
-python -m nice_validation --config configs/server.local.yaml fetch-data
-python -m nice_validation --config configs/server.local.yaml fetch-data --mode stream --limit 3000 --execute
-python -m nice_validation --config configs/server.local.yaml fetch-model
-python -m nice_validation --config configs/server.local.yaml init-adapter
-python -m nice_validation --config configs/server.local.yaml prepare-data
-python -m nice_validation --config configs/server.local.yaml prepare-environments
-```
-
-`--limit 3000` 是原始读取上限示例，清洗后不足 300 条会停止。原始读取前缀会写入来源记录，不能描述成对完整数据集的均匀抽样。省略 limit 才会读取 tool split 的全部记录。`fetch-data` 默认只预览目标分片和字节数；只有 `--execute` 才写入数据。`fetch-model` 必须显式调用且仅允许 `execution: server`；已有模型则先核对来源，再执行 `freeze-model`，不会重复下载。
-
-模型服务用另一张已授权 GPU 启动：
-
-```bash
-python -m nice_validation --config configs/service.local.yaml serve --port 8765
-```
-
-服务器先执行 `preflight --network` 汇总配置、依赖、GPU、Docker 和网络缺口。数据/模型/镜像/服务就绪后执行 `preflight --prepared`；本地 tokenizer 可用 `python scripts/check_tokenizer.py --config configs/server.local.yaml` 独立检查。预检不会下载或加载权重。分步操作详见 ONLINE，完整托管使用 HANDOFF 的单入口。
-
-此次协议与缓存身份修复后，请使用新的运行目录。正式运行前的真实 smoke 包含完整 32768 token 容量更新验收；本地 mock 不能替代。服务切换 adapter 支持失败恢复，残留容器可通过 `cleanup-containers` 先列出，再用 `--execute` 按精确运行标签清理。
-
-主进程随后执行：
-
-```bash
-python -m nice_validation --config configs/server.local.yaml smoke
-python -m nice_validation --config configs/server.local.yaml run --profile main
-python -m nice_validation --config configs/server.local.yaml status
-python -m nice_validation --config configs/server.local.yaml resume
-```
-
-独立命令还包括 `rollout-nice`、`score`、`make-subsets`、`train --subset high_11`、`evaluate --model initial`、`analyze` 和 `audit`。参数顺序是先给全局 `--config`/`--output`，再给子命令。
-
-每个模型副本使用一张完整 UUID 绑定的 GPU。多个推理服务可按固定题目分片并行；配置 `agent.workers` 和对应 `service_endpoints`。不支持把一份训练模型通过配置数字变成八卡 DDP/FSDP。单卡长序列是否可行，必须由真实 smoke 验证。
-
-## 方法与交付
-
-- [方法定义与研究边界](docs/METHOD.md)
-- [数据来源、格式与冻结](docs/DATA.md)
-- [服务器交接与恢复](docs/HANDOFF.md)
-- [验证记录](docs/VALIDATION.md)
-- [参考来源与复用边界](docs/REFERENCES.md)
-
-SWE-smith 主 validation 同时参与评分和同题评测；迁移能力由四套独立冻结的外部 50 题分别衡量。不以主集成绩证明泛化，不把子集成绩当成官方全量榜单，不声称完整复现 NICE。没有要求高分组获胜。
-
-用户自行提交 GitHub。本项目没有自动 commit、push 或合并步骤。数据、权重、状态和运行日志由 `.gitignore` 排除。
+完成后回传 `<storage>/controller/results-*.zip` 与 `completion.json`。报告/表格/图在 `<storage>/runs/main/`；模型、12 份阶段 adapter、优化器断点和完整 trace 留服务器。详见 [数据流](docs/DATAFLOW.md)、[方法](docs/METHOD.md)、[数据](docs/DATA.md)。

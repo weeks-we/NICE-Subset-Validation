@@ -1,5 +1,37 @@
 # 本地验证记录
 
+## 2026-11-01 追加：原 NICE 题复测与扩大 token 预算
+
+当前正式协议更新为：75 轮、每次输出 32768、整题累计输出 262144、上下文 131072 token，交互墙钟 3600 秒、单工具 300 秒。NICE、SFT 验证、benchmark 与原题复测使用同一预算；SFT 教师轨迹上限仍为 32768。真实 smoke 强制核验完整上下文及 32768 输出位置的 NICE 反向容量，短输出测试不能代替。
+
+- 冻结 4 份 checkpoint 选择后，initial+4 份权重对原 NICE 20 题各 greedy 运行一次，新增 100 episode，总计 2060。独立 nice_retest 结果空间，原随机 160 次 rollout 不覆盖，复测不参与权重选择，也不计入独立 benchmark。
+- 新预算全尺寸 mock、独立串行评分、恢复及 zip 校验均通过：2000 候选、256 更新、2048 条次曝光，160+1300+500+100=2060 episode；2000 条分数和 20 份方向与串行参考一致，4040 个缓存文件恢复后 checksum 不变，audit 无 FAIL。
+- 核验全部 5 个模型各 20 题、原题 ID 完全一致、repeat=0、greedy 标志、固定分母与 selection.json 不变；4 类新增 CSV 行数为 5/100/20/2，自动进入最终 zip。合成包 1,442,919 字节，CRC 与逐文件 checksum 通过；合成结果不构成研究证据。
+- 本机全量回归曾在绘图时因 Anaconda NumPy/MKL 与 PyTorch 重复加载 libiomp5md.dll 异常退出。独立最小复现确认 OpenMP Error #15；设置当前测试进程 `MKL_THREADING_LAYER=SEQUENTIAL` 后，矩阵运算、PyTorch 反向与绘图联合复现通过。不使用忽略重复运行库错误的开关；不将本机设置强加到 Linux GPU 实验。
+- 最终测试共 **328 项通过、0 失败**：基础 Anaconda 环境全量 pytest 为 **296 passed、3 个模块级 skip，210.57 秒**；随后在既有 `runs/real-interface-audit-20261028/venv` 中实际补跑这 3 个模块（官方模型接口、模型运行优化、Parquet），**32 passed、0 skip，22.37 秒**。该环境 Transformers=5.21.0、PEFT=0.21.2、datasets=5.1.0；真实微型随机模型不下载目标权重。新增覆盖大输出跨度容量门槛、复测必须晚于权重冻结、禁止未选中节点、原题 ID 与分母、恢复不重复、4 类复测表入包。
+- 三张彩色图人工复核与程序布局审计通过；git diff --check 通过。日志为 `runs/a-nice-retest-pytest-final-20261101.log` 与 `runs/a-nice-retest-real-interfaces-20261101.log`。测试分两个环境执行，不宣称基础环境已安装全部模型后端依赖。
+
+证据在被忽略的 `runs/a-nice-retest-full-20261101-v2/validation_checks.json`、`runs/a-nice-retest-serial-20261101-v2/` 与 `runs/verify_nice_retest_20261101.py`。GPU 容量与目标模型仍未在本机验收，服务器按 HANDOFF 的新预算真实 smoke 执行。
+
+## 2026-11-01 师兄 A 新定义初次验收（扩大预算及追加复测之前）
+
+当前正式配置为 configs/main.yaml，交接见 HANDOFF.md。下方 2026-10-28 等记录属于旧定义，不是本轮实验参数或目标模型成绩。
+
+- 最终源码全量 CPU 回归：**324 passed，0 failed，0 skipped**，耗时 251.31 秒。包含新流程及历史基础回归。
+- 新流程分块验证：Verified NICE/benchmark 拆分、未入候选池轨迹 ID 连接 SWE-smith 验证任务、两侧显式来源家族闭包、冻结候选被改动时阻止训练、同组跨学习率成员/顺序一致、12 节点精确曝光、每 (组, lr) 独立选择和平分规则、禁止提前/额外 checkpoint 接触 benchmark。
+- 实际 Transformers/PEFT 微型随机 Qwen2 与 Qwen3_5：LoRA 梯度/有限差分/更新/重载，真实 padding 与 batch/累积，分块 CE 与有效位置输出层的损失/梯度对照，零 dropout checkpointed NICE 重放，常驻底座切换 LoRA 与新加载数值一致，greedy 不重复 teacher-forcing 前向，工具历史保留与生成额度边界。
+- 进程/生命周期单元验证：8 卡评分分片、引用/顺序/缓存校验与失败回收；4 训练分支＋并发验证角色；训练卡释放后加入推理池；worker 租约；控制器服务退出和交付；Windows 瞬时文件锁下保持节点原子发布。
+- 最终全尺寸显式 mock：**2000 候选、20 NICE 题 ×8、SWE-smith 100 验证、Verified 100 benchmark、高低各 512、2 LR/4 分支、12 节点、4 份选中权重**；256 更新、2048 条次曝光；160+1300+500=**1960 episode**；审计无 FAIL。
+- 2000 条候选分数和 20 份验证向量与独立串行参考完全一致。恢复运行通过，训练/episode 计数不增加，4040 个投影缓存文件 SHA256 保持。
+- CSV 行数、模型 ID、节点曝光、同组两学习率的数据顺序、选权重规则和任务集合核对通过。mock 的正式 success_rate/resolved_count 保持 null，合成值单列标记。
+- 三类彩色/灰度 PNG 布局检查、人工图像复核及严格文件检查通过；PDF/SVG 同步导出。训练进度图连接有序曝光节点，benchmark 点图为 95% Wilson 区间，不伪装跨 seed 方差。
+- 恢复后结果包 **1,448,175 字节（合成验证包）**；zip CRC、内嵌 checksum 与当前产物一致。包含 selection、各 split ID、报告/表格/图，排除原始任务记录、模型/LoRA/optimizer 权重、trace 和投影缓存。
+- git diff --check 通过；默认服务器入口的只读计划输出通过。未执行 commit/push。
+
+本机证据在被 Git 忽略的 `runs/a-verified-full-20261101-v6/`（含 validation_checks.json）、`runs/a-full-tests-final-v6-20261101.log`；串行参考在 `runs/a-verified-serial-20261101-v6/`。详细本地报告为 `runs/A_REDESIGN_VALIDATION_20261101.md`。这些不是服务器输入，不应上传 Git。
+
+**边界：没有在本机下载或运行目标 27B 权重，没有启动真实 H200、Docker 任务或官方完整实验。**服务器必须使用新 clone、新 venv、新 storage，通过旧输入 checksum 核验、221 道任务环境预检、32k SFT 容量、131072/32768 输出位置的 NICE 反向容量与真实开发题 smoke。可选 CUDA 内核的实际启用和吞吐也要在 H200 上确认；CPU 通过不代表真实容量或网络已经验收。
+
 ## 2026-10-28 最后五块严格复核
 
 按用户最后指定的五块重新展开：数据获取/目录、数据处理、训练/梯度、NICE、SFT/benchmark。发现并修复主任务与Pro按动态HEAD取差会漏掉Agent已commit修复，以及文本换行转换破坏CRLF补丁的真实判分问题。现固定任务起点SHA，主任务按bytes读取/保存补丁，Pro由Git写容器文件并通过Harbor download_file下载；Pro独立重判核对相同干净root/commit。Git仓库被模型破坏记任务失败，Docker故障仍记基础设施错误；pristine_regrade仅在实际执行重判时为true。另修复pad_token_id=0被or替换及非法下载limit/mode未提前拒绝。

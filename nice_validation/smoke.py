@@ -1,4 +1,4 @@
-"""Independent engineering smoke; never consumes the 510 main episodes."""
+"""Independent single-row engineering smoke; physical batches are probed later."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from nice_validation.core import Run, digest, read, write
+from nice_validation.design import counts
 from nice_validation.scoring import aggregate_score, fresh_adam, sketch
 
 
@@ -25,6 +26,12 @@ def require_real_smoke(run: Run) -> None:
         raise ValueError(
             "Real smoke must include an optimizer update at the full candidate context length"
         )
+    if run.cfg["experiment"].get("design") == "verified-selection-v1":
+        probe = result.get("replay_capacity_probe", {})
+        if (not probe.get("backward_completed")
+                or probe.get("total_tokens", 0) < run.cfg["agent"]["context_length"]
+                or probe.get("output_tokens", 0) < min(run.cfg["agent"]["max_new_tokens"], run.cfg["agent"]["context_length"] - 1)):
+            raise ValueError("Real smoke must cover full agent-context NICE replay backward")
 
 
 def smoke(run: Run, task_file: str | None = None) -> None:
@@ -161,7 +168,7 @@ def smoke(run: Run, task_file: str | None = None) -> None:
                 runtime.parameters,
                 [row],
                 runtime.loss,
-                run.cfg["training"],
+                {**run.cfg["training"], "effective_batch": 1, "micro_batch_size": 1},
                 folder / "training",
                 digest({"run": run.identity, "purpose": "smoke"}),
                 lambda m: run.event("smoke", "optimizer_step", **m),
@@ -189,7 +196,7 @@ def smoke(run: Run, task_file: str | None = None) -> None:
                 runtime.parameters,
                 [capacity_row],
                 runtime.loss,
-                run.cfg["training"],
+                {**run.cfg["training"], "effective_batch": 1, "micro_batch_size": 1},
                 folder / "capacity",
                 digest(
                     {
@@ -208,6 +215,25 @@ def smoke(run: Run, task_file: str | None = None) -> None:
                 "gpu_memory_allocated_peak": torch.cuda.max_memory_allocated(),
                 "gpu_memory_reserved_peak": torch.cuda.max_memory_reserved(),
             }
+            replay_capacity = None
+            if run.cfg["experiment"].get("design") == "verified-selection-v1":
+                from nice_validation.model import token_ce_sum
+                length = run.cfg["agent"]["context_length"]
+                long_ids = (body * ((length + len(body) - 1) // len(body)))[:length]
+                runtime.model.zero_grad(set_to_none=True)
+                runtime.gradient_mode()
+                torch.cuda.reset_peak_memory_stats()
+                output_count = min(run.cfg["agent"]["max_new_tokens"], length - 1)
+                loss = token_ce_sum(runtime.model, long_ids[:-output_count], long_ids[-output_count:])
+                loss.backward()
+                if not torch.isfinite(loss) or any(p.grad is not None and not bool(torch.isfinite(p.grad).all()) for _, p in runtime.parameters):
+                    raise ValueError("Nonfinite full-agent-context replay gradient")
+                replay_capacity = {"total_tokens": length, "backward_completed": True,
+                                   "output_tokens": output_count,
+                                   "gpu_memory_allocated_peak": torch.cuda.max_memory_allocated(),
+                                   "gpu_memory_reserved_peak": torch.cuda.max_memory_reserved(),
+                                   "kind": "independent_synthetic_full_agent_context_replay"}
+                runtime.model.zero_grad(set_to_none=True)
             runtime.model.save_pretrained(folder / "adapter", safe_serialization=True)
             expected = {
                 name: p.detach().cpu().clone() for name, p in runtime.parameters
@@ -244,6 +270,7 @@ def smoke(run: Run, task_file: str | None = None) -> None:
                 "target_model_tested": True,
                 "adapter_reload_equal": reload_equal,
                 "capacity_probe": capacity,
+                "replay_capacity_probe": replay_capacity,
                 "projection_diagnostics": diagnostics,
                 "generation_replay_alignment": alignment,
                 "episode": outcome,
@@ -256,27 +283,27 @@ def smoke(run: Run, task_file: str | None = None) -> None:
         folder = run.root / "smoke"
         write(folder / "result.json", result)
         observed = result["wall_seconds"]
+        design = counts(run.cfg)
         estimate = {
             "mode": run.cfg["mode"],
             "observed_smoke_wall_seconds": observed,
             "estimated_remaining_seconds": None,
             "assumptions": "One smoke is insufficient for a reliable episode-tail or training throughput estimate; update with measured main progress. No schedule promise.",
-            "main_episode_budget": 510,
-            "transfer_episode_budget": (
-                2600 if run.cfg.get("transfer", {}).get("enabled") else 0
-            ),
+            "main_episode_budget": design["main_episodes"],
+            "transfer_episode_budget": design["transfer_episodes"],
             "transfer_component_estimate_seconds": None,
             "episode_estimate_scope": "SWE-smith main tasks only; no extrapolation from a single smoke to Pro/Live/Verified/Terminal",
-            "training_trajectory_exposures": 360,
+            "training_trajectory_exposures": design["training_exposures"],
         }
         if result.get("episode"):
             seconds = result["episode"]["wall_seconds"]
             estimate.update(
                 {
-                    "episode_component_estimate_seconds": seconds * 510,
+                    "episode_component_estimate_seconds": seconds
+                    * design["main_episodes"],
                     "episode_component_range_seconds": [
-                        seconds * 510 * 0.5,
-                        seconds * 510 * 3,
+                        seconds * design["main_episodes"] * 0.5,
+                        seconds * design["main_episodes"] * 3,
                     ],
                     "assumptions": "Single episode extrapolation, 1 worker, 0.5–3x sensitivity; excludes gradient scoring/training/download; not a confidence interval.",
                 }

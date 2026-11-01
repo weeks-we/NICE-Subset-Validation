@@ -70,6 +70,16 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
         value = cfg[section].get(key)
         add(section + "." + key, bool(value) and "REPLACE_" not in str(value), value)
     info = doctor(cfg)
+    if cfg["experiment"].get("design") == "verified-selection-v1":
+        versions = {}
+        for package in ["flash-linear-attention", "causal-conv1d", "kernels"]:
+            try:
+                versions[package] = importlib.metadata.version(package)
+            except importlib.metadata.PackageNotFoundError:
+                versions[package] = None
+        checks.append({"check": "linear_attention_kernel_packages",
+                       "status": "PASS" if versions["flash-linear-attention"] and versions["causal-conv1d"] else "WARN",
+                       "detail": {"packages": versions, "note": "Package presence is not proof of active CUDA kernels; verify actual backend/throughput before freezing. CPU reference fallback may be much slower."}})
     try:
         from nice_validation.compatibility import harness_api
 
@@ -195,7 +205,9 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
                     health = json.load(response)
                 selected = cfg.get("resources", {}).get("gpu_uuids", [])
                 expected_gpu = (
-                    selected[index + 1] if index + 1 < len(selected) else None
+                    cfg["resources"]["inference_gpu_uuids"][index]
+                    if cfg.get("resources", {}).get("inference_gpu_uuids")
+                    else selected[index + 1] if index + 1 < len(selected) else None
                 )
                 add(
                     "service:" + endpoint,

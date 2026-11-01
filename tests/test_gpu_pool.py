@@ -22,7 +22,7 @@ GPUS = [f"GPU-{i:08x}-aaaa-aaaa-aaaa-aaaaaaaaaaaa" for i in range(12)]
 def test_preflight_checks_every_selected_gpu_before_preparation(monkeypatch):
     from nice_validation.preflight import preflight
 
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["model"]["gpu_uuids"] = GPUS[:1]
     cfg["resources"] = {"gpu_count": 8, "gpu_uuids": GPUS[:8]}
     observed = {

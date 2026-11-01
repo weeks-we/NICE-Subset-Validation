@@ -1,7 +1,0 @@
-extends: main.yaml
-mode: mock
-output: runs/mock
-model:
-  device: cpu
-score:
-  projection_dim: 128

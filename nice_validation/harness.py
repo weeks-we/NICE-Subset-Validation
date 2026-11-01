@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import queue
 import re
 import shlex
@@ -661,6 +662,10 @@ def real_episode(
                     **response["usage"],
                     service_url=budget["service_url"],
                     context_length=len(response["input_ids"]),
+                    finish_reason=response.get("finish_reason"),
+                    generation_budget=response.get("generation_budget"),
+                    episode_output_tokens_before=outputs,
+                    episode_output_tokens_remaining=budget["total_new_tokens"] - outputs,
                     prefill_seconds=None,
                     decode_seconds=None,
                 )
@@ -730,13 +735,26 @@ def real_episode(
         "SHELL_TERMINATED",
         "PATCH_COLLECTION_FAILED",
     } or stop_reason.startswith("INVALID_TOOL_CALL")
+    automatic_submission = (
+        cfg["agent"].get("budget_exhaustion_policy", "fail") == "grade_patch"
+        and stop_reason
+        in {"ACTION_LIMIT", "WALL_LIMIT", "TOKEN_LIMIT", "CONTEXT_LIMIT"}
+        and bool(patch.strip())
+    )
+    grade_eligible = not exhausted or automatic_submission
     resolved = (
-        False if exhausted else official_grade(cfg, task, patch, folder / "grading")
+        official_grade(cfg, task, patch, folder / "grading")
+        if grade_eligible
+        else False
     )
     return {
         "resolved": resolved,
         "status": "RESOLVED" if resolved else "TASK_FAILED",
         "stop_reason": stop_reason,
+        "automatic_submission": automatic_submission,
+        "patch_sent_for_grading": grade_eligible and bool(patch.strip()),
+        "patch_bytes": len(patch.encode("utf-8")),
+        "patch_sha256": hashlib.sha256(patch.encode("utf-8")).hexdigest(),
         "input_tokens": inputs,
         "output_tokens": outputs,
         "logprob_replay_tokens": sum(
@@ -797,7 +815,7 @@ def _episode_job(
                     "task_id": task["instance_id"],
                     "model_id": model_id,
                     "repeat": repeat,
-                    "seed": 2026 if not nice else 42 + ti * 4 + repeat,
+                    "seed": 2026 if not nice else 42 + ti * run.cfg["experiment"]["rollouts"] + repeat,
                 }.items()
             ):
                 raise ValueError(
@@ -822,7 +840,7 @@ def _episode_job(
             break
         attempt_folder = task_folder / f"attempt_{attempt:02d}"
         attempt_folder.mkdir(parents=True, exist_ok=False)
-        seed = 2026 if not nice else 42 + ti * 4 + repeat
+        seed = 2026 if not nice else 42 + ti * run.cfg["experiment"]["rollouts"] + repeat
         write(
             attempt_folder / "intent.json",
             {
@@ -963,7 +981,7 @@ def episodes(run: Run, model_id: str, nice: bool) -> None:
             for ti, task in enumerate(tasks):
                 if ti % workers != worker_index:
                     continue
-                for repeat in range(4 if nice else 1):
+                for repeat in range(run.cfg["experiment"]["rollouts"] if nice else 1):
                     completed.append(
                         _episode_job(
                             worker_run, stage, model_id, nice, ti, task, repeat, folder

@@ -117,7 +117,7 @@ def test_editor_insert_into_file_without_last_newline(tmp_path):
 
 
 def test_preflight_reports_all_missing_prerequisites_without_weights():
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     info = {"gpu": {"unavailable": "test"}, "docker": {"unavailable": "test"}}
     with patch("nice_validation.preflight.doctor", return_value=info):
         report = preflight(cfg)

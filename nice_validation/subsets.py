@@ -8,6 +8,7 @@ from collections import Counter
 import numpy as np
 
 from nice_validation.core import Run, read, write
+from nice_validation.design import sampling_groups, strata_ranges
 
 
 def statistics(values: list[float]) -> dict:
@@ -33,36 +34,40 @@ def make_subsets(run: Run) -> None:
         if out is None:
             return
         cfg = run.cfg["experiment"]
+        candidate_count, subset_size = cfg["candidates"], cfg["subset_size"]
+        ranges = strata_ranges(candidate_count, cfg.get("strata", "thirds"))
         rows = sorted(
             read(run.root / "scores" / "candidate_scores.json"),
             key=lambda r: (r["fresh_adam_cosine"], r["data_id"]),
         )
-        if len(rows) != 300 or len({r["data_id"] for r in rows}) != 300:
-            raise ValueError("Expected 300 unique scored candidates")
+        if (
+            len(rows) != candidate_count
+            or len({r["data_id"] for r in rows}) != candidate_count
+        ):
+            raise ValueError(f"Expected {candidate_count} unique scored candidates")
         if rows[0]["fresh_adam_cosine"] == rows[-1]["fresh_adam_cosine"]:
             raise ValueError(
                 "All scores tied: effective score stratification is unavailable"
             )
         rng = random.Random(2026)
         probes = [
-            sum(r["supervised_tokens"] for r in rng.sample(rows, 30))
+            sum(r["supervised_tokens"] for r in rng.sample(rows, subset_size))
             for _ in range(cfg["budget_probes"])
         ]
         budget = float(np.median(probes))
         selected = []
         member_sets = []
-        groups = {
-            "low": rows[:100],
-            "middle": rows[100:200],
-            "high": rows[200:],
-            "random": rows,
-        }
-        for group, source in groups.items():
+        configured_groups = sampling_groups(run.cfg)
+        groups = {group: rows[start:end] for group, (start, end) in ranges.items()}
+        if "random" in configured_groups:
+            groups["random"] = rows
+        for group in configured_groups:
+            source = groups[group]
             reachable = sorted(r["supervised_tokens"] for r in source)
             for seed in cfg["seeds"]:
                 rng = random.Random(f"subset-v1:{group}:{seed}")
                 for attempt in range(cfg["sample_attempts"]):
-                    candidate = rng.sample(source, 30)
+                    candidate = rng.sample(source, subset_size)
                     total = sum(r["supervised_tokens"] for r in candidate)
                     members = sorted(r["data_id"] for r in candidate)
                     if (
@@ -78,8 +83,8 @@ def make_subsets(run: Run) -> None:
                             "group": group,
                             "seed": seed,
                             "target": budget,
-                            "reachable_min": sum(reachable[:30]),
-                            "reachable_max": sum(reachable[-30:]),
+                            "reachable_min": sum(reachable[:subset_size]),
+                            "reachable_max": sum(reachable[-subset_size:]),
                             "attempt_limit": cfg["sample_attempts"],
                         },
                     )
@@ -93,7 +98,7 @@ def make_subsets(run: Run) -> None:
                         "group": group,
                         "sampling_seed": seed,
                         "members": members,
-                        "member_count": 30,
+                        "member_count": subset_size,
                         "supervised_tokens": total,
                         "budget_target": budget,
                         "sampling_attempts": attempt + 1,
@@ -124,7 +129,7 @@ def make_subsets(run: Run) -> None:
                     r["fresh_adam_cosine"] == rows[i]["fresh_adam_cosine"] for r in rows
                 ),
             }
-            for i in [100, 200]
+            for i in [end for start, end in list(ranges.values())[:-1]]
         ]
         for name, value in [
             ("subsets", selected),

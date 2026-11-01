@@ -267,6 +267,32 @@ def initialize_adapter(cfg: dict) -> dict:
     return identity
 
 
+def supports_selected_logits(model):
+    import inspect
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    return "logits_to_keep" in inspect.signature(base.forward).parameters
+
+
+def chunked_ce_sum(logits, targets, chunk_size=512):
+    """Exact CE sum with bounded FP32 softmax storage; no token subsampling."""
+    import torch
+    from torch.utils.checkpoint import checkpoint
+
+    def block(values, labels):
+        return torch.nn.functional.cross_entropy(values.float(), labels, reduction="sum", ignore_index=-100)
+
+    losses = []
+    for start in range(0, len(targets), chunk_size):
+        values, labels = logits[start:start + chunk_size], targets[start:start + chunk_size]
+        if torch.is_grad_enabled() and values.requires_grad:
+            losses.append(checkpoint(block, values, labels, use_reentrant=False))
+        else:
+            losses.append(block(values, labels))
+    if not losses:
+        raise ValueError("CE requires nonempty target positions")
+    return torch.stack(losses).sum()
+
+
 def token_ce_sum(model, input_ids, target_ids):
     """Sum model-generated token CE; observations appear only as conditions."""
     import torch
@@ -275,13 +301,14 @@ def token_ce_sum(model, input_ids, target_ids):
         raise ValueError("Replay requires nonempty exact prompt and output IDs")
     device = next(model.parameters()).device
     joined = torch.tensor([input_ids + target_ids], device=device)
-    logits = model(input_ids=joined, attention_mask=torch.ones_like(joined)).logits
     start = len(input_ids) - 1
-    return torch.nn.functional.cross_entropy(
-        logits[0, start : start + len(target_ids)].float(),
-        torch.tensor(target_ids, device=device),
-        reduction="sum",
-    )
+    if supports_selected_logits(model):
+        # Compute the LM head only at actual generated-token prediction positions.
+        positions = torch.arange(start, start + len(target_ids), device=device)
+        logits = model(input_ids=joined, attention_mask=torch.ones_like(joined), logits_to_keep=positions).logits[0]
+    else:
+        logits = model(input_ids=joined, attention_mask=torch.ones_like(joined)).logits[0, start:start + len(target_ids)]
+    return chunked_ce_sum(logits, torch.tensor(target_ids, device=device))
 
 
 class Runtime:
@@ -323,8 +350,7 @@ class Runtime:
             "lora_" not in name for name, _ in self.parameters
         ):
             raise ValueError("Only LoRA parameters may be trainable")
-        self.identity = digest(
-            {
+        self.identity_components = {
                 "model_lock": sha(Path(cfg["model"]["path"]) / "model_lock.json"),
                 "adapter": self.adapter_identity,
                 "dtype": cfg["model"]["dtype"],
@@ -348,21 +374,74 @@ class Runtime:
                     for k in ["torch", "transformers", "peft"]
                 },
             }
-        )
+        self.identity = digest(self.identity_components)
+
+    def switch_adapter(self, path: Path):
+        """Keep the frozen base resident; swap only a fully verified LoRA adapter."""
+        checksum = tree_identity(path)
+        if checksum == self.adapter_identity:
+            return
+        current = self.model.active_adapter
+        name = "served_" + checksum[:24]
+        self.model.load_adapter(str(path), adapter_name=name, is_trainable=True, local_files_only=True)
+        self.model.set_adapter(name)
+        if current != name:
+            self.model.delete_adapter(current)
+        self.adapter_identity = checksum
+        self.identity_components["adapter"] = checksum
+        self.identity = digest(self.identity_components)
+        self.parameters = sorted((n, p) for n, p in self.model.named_parameters() if p.requires_grad)
+        if not self.parameters or any("lora_" not in n for n, p in self.parameters):
+            raise ValueError("Only LoRA parameters may be trainable after switching")
+        self.model.eval()
 
     def loss(self, row: dict):
         import torch
 
         device = next(self.model.parameters()).device
-        ids = torch.tensor([row["input_ids"]], device=device)
-        labels = torch.tensor([row["labels"]], device=device)
-        logits = self.model(input_ids=ids, attention_mask=torch.ones_like(ids)).logits
-        return torch.nn.functional.cross_entropy(
-            logits[:, :-1].float().reshape(-1, logits.shape[-1]),
-            labels[:, 1:].reshape(-1),
+        rows = row if isinstance(row, list) else [row]
+        if not rows or any(
+            len(r["input_ids"]) < 2 or len(r["input_ids"]) != len(r["labels"])
+            for r in rows
+        ):
+            raise ValueError("Invalid training batch tokens/labels")
+        width = max(len(r["input_ids"]) for r in rows)
+        pad = self.tokenizer.pad_token_id
+        if pad is None:
+            pad = self.tokenizer.eos_token_id
+        if pad is None:
+            raise ValueError("Tokenizer requires a pad or EOS token for batching")
+        ids = torch.full((len(rows), width), pad, dtype=torch.long, device=device)
+        labels = torch.full_like(ids, -100)
+        attention = torch.zeros_like(ids)
+        for index, item in enumerate(rows):
+            length = len(item["input_ids"])
+            ids[index, :length] = torch.tensor(item["input_ids"], device=device)
+            labels[index, :length] = torch.tensor(item["labels"], device=device)
+            attention[index, :length] = 1
+        tokens = (labels[:, 1:] != -100).sum(dim=1)
+        if bool((tokens == 0).any()):
+            raise ValueError("Every trajectory requires supervised next-token targets")
+        if self.cfg["model"].get("selective_logits"):
+            if not supports_selected_logits(self.model):
+                raise ValueError("The frozen model must support explicit logits_to_keep positions")
+            positions = ((labels[:, 1:] != -100).any(dim=0)).nonzero().flatten()
+            logits = self.model(input_ids=ids, attention_mask=attention, logits_to_keep=positions).logits
+            targets = labels[:, positions + 1]
+        else:
+            logits = self.model(input_ids=ids, attention_mask=attention).logits[:, :-1]
+            targets = labels[:, 1:]
+        if self.cfg["model"].get("selective_logits"):
+            return torch.stack([chunked_ce_sum(logits[i], targets[i]) / tokens[i] for i in range(len(rows))]).mean()
+        losses = torch.nn.functional.cross_entropy(
+            logits.float().reshape(-1, logits.shape[-1]),
+            targets.reshape(-1),
             ignore_index=-100,
-            reduction="mean",
+            reduction="none",
         )
+        # Match NICE's per-trajectory token-mean objective; long trajectories
+        # do not acquire greater weight merely because they share a batch.
+        return (losses.reshape(len(rows), -1).sum(dim=1) / tokens).mean()
 
     def close(self) -> None:
         import gc
@@ -373,8 +452,19 @@ class Runtime:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def candidate_backward(self, row: dict) -> None:
+    def gradient_mode(self):
         self.model.eval()
+        if self.cfg["experiment"].get("design") == "verified-selection-v1" and self.cfg["model"].get("gradient_checkpointing"):
+            import torch
+            if any(isinstance(m, torch.nn.Dropout) and m.p != 0 for m in self.model.modules()):
+                raise ValueError("Checkpointed NICE requires zero dropout")
+            text_cfg = getattr(self.model.config, "text_config", self.model.config)
+            if getattr(text_cfg, "attention_dropout", 0) != 0:
+                raise ValueError("Checkpointed NICE requires attention_dropout=0")
+            self.model.train()  # HF checkpointing is active only in training mode; dropout is zero.
+
+    def candidate_backward(self, row: dict) -> None:
+        self.gradient_mode()
         self.model.zero_grad(set_to_none=True)
         loss = self.loss(row)
         if not loss.isfinite():
@@ -392,7 +482,7 @@ class Runtime:
             raise ValueError(
                 "NICE replay requires the untruncated on-policy distribution"
             )
-        self.model.eval()
+        self.gradient_mode()
         nll = token_ce_sum(self.model, step["input_ids"], step["output_ids"])
         difference = abs(float(nll.detach()) + step["logprob_sum"])
         tolerance = self.cfg["score"].get("logprob_atol_per_token", 0.005) * len(
@@ -418,9 +508,22 @@ class Runtime:
 
         torch.manual_seed(seed)
         self.model.eval()
+        keep = self.cfg["agent"].get("history_observations")
+        if keep is not None:
+            import copy
+            messages = copy.deepcopy(messages)
+            observations = [i for i, m in enumerate(messages) if m["role"] == "tool"]
+            for index in observations[:-keep]:
+                messages[index]["content"] = "[Earlier tool observation omitted; full output retained in episode evidence.]"
         text = render(self.tokenizer, messages, self.cfg["model"]["thinking"], True)
         ids = self.tokenizer(text, add_special_tokens=False)["input_ids"]
-        if len(ids) + max_tokens > self.cfg["agent"]["context_length"]:
+        if type(max_tokens) is not int or max_tokens <= 0:
+            raise ValueError("max_tokens must be a positive integer")
+        requested_max_tokens = max_tokens
+        available_tokens = self.cfg["agent"]["context_length"] - len(ids)
+        if self.cfg["agent"].get("context_budget_policy", "strict") == "available":
+            max_tokens = min(max_tokens, available_tokens)
+        if max_tokens <= 0 or len(ids) + max_tokens > self.cfg["agent"]["context_length"]:
             raise ValueError("CONTEXT_LIMIT")
         generation = GenerationConfig(
             do_sample=nice,
@@ -447,6 +550,9 @@ class Runtime:
                 generation_config=generation,
             )
         output_ids = result.sequences[0, len(ids) :].tolist()
+        eos_ids = generation.eos_token_id
+        eos_ids = eos_ids if isinstance(eos_ids, (list, tuple)) else [eos_ids]
+        stopped_by_eos = bool(output_ids) and output_ids[-1] in eos_ids
         raw_text = self.tokenizer.decode(output_ids, skip_special_tokens=False)
         content = self.tokenizer.decode(output_ids, skip_special_tokens=True)
         from nice_validation.protocol import parse_completion
@@ -454,19 +560,31 @@ class Runtime:
         parsed = parse_completion(
             content, f"call_{seed}", self.cfg["model"]["thinking"]
         )
-        with torch.no_grad():
-            nll = token_ce_sum(self.model, ids, output_ids)
+        nll = None
+        if nice:
+            with torch.no_grad():
+                nll = token_ce_sum(self.model, ids, output_ids)
         return {
             **parsed,
             "input_ids": ids,
             "output_ids": output_ids,
             "raw_output": raw_text,
+            "finish_reason": (
+                "eos" if stopped_by_eos else "length" if len(output_ids) == max_tokens else "other"
+            ),
+            "generation_budget": {
+                "requested_max_tokens": requested_max_tokens,
+                "effective_max_tokens": max_tokens,
+                "available_context_tokens": available_tokens,
+                "context_clamped": max_tokens < requested_max_tokens,
+                "reached_effective_cap": len(output_ids) == max_tokens,
+            },
             "messages": messages,
             "tools": TOOLS,
             "rendered_prompt_sha256": digest(text),
             "model_identity": self.identity,
             "adapter_identity": self.adapter_identity,
-            "logprob_sum": -float(nll),
+            "logprob_sum": -float(nll) if nll is not None else None,
             "sampling": {
                 "temperature": 1 if nice else 0,
                 "top_p": 1,
@@ -479,7 +597,7 @@ class Runtime:
                 "output_tokens": len(output_ids),
                 "thinking_tokens": None,
                 "cached_input_tokens": None,
-                "logprob_replay_tokens": len(ids) + len(output_ids),
+                "logprob_replay_tokens": len(ids) + len(output_ids) if nice else 0,
                 "estimated": False,
             },
         }

@@ -174,7 +174,7 @@ def test_pro_patch_keeps_committed_changes_and_records_frozen_base(
     asyncio.run(
         module.service_loop(
             NativeEnvironment(),
-            config("configs/main.yaml"),
+            config("configs/legacy.yaml"),
             adapter,
             tmp_path / "logs",
             "public issue",

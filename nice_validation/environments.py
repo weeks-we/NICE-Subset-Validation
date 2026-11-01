@@ -168,6 +168,9 @@ def prepare_environments(run: Run) -> None:
         client = docker.from_env()
         mapping, failures = {}, []
         tasks = read(run.root / "manifests/validation.json")
+        if run.cfg["experiment"].get("design") == "verified-selection-v1":
+            tasks += read(run.root / "manifests/sft_validation.json")
+            tasks += read(run.root / "manifests/benchmark.json")
         if run.cfg.get("transfer", {}).get("enabled"):
             from nice_validation.transfer_sources import transfer_tasks
 
@@ -262,7 +265,7 @@ def prepare_environments(run: Run) -> None:
             except (InfraError, TaskFailure) as exc:
                 failures.append({"task_id": task["instance_id"], "reason": str(exc)})
         report = {
-            "task_count": 30,
+            "task_count": run.cfg["experiment"]["validation"],
             "images_ready": len(mapping),
             "failures": failures,
             "official_harness": identity,

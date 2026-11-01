@@ -200,9 +200,11 @@ class FixtureTokenizer:
         }
 
 
-def fixture() -> tuple[list[dict], list[dict]]:
+def fixture(
+    candidate_count: int = 390, validation_count: int = 60
+) -> tuple[list[dict], list[dict]]:
     candidates, validation = [], []
-    for i in range(390):
+    for i in range(candidate_count):
         repo = ["alpha/core", "beta/lib", "gamma/utils"][i % 3]
         messages = [
             {"role": "user", "content": f"Synthetic training task number {i}."},
@@ -218,7 +220,7 @@ def fixture() -> tuple[list[dict], list[dict]]:
                 "model": "synthetic_fixture",
             }
         )
-    for i in range(60):
+    for i in range(validation_count):
         validation.append(
             {
                 "instance_id": f"valid__task-{i:04d}",
@@ -231,6 +233,9 @@ def fixture() -> tuple[list[dict], list[dict]]:
 
 
 def prepare(run: Run) -> None:
+    if run.cfg["experiment"].get("design") == "verified-selection-v1":
+        from nice_validation.experiment_data import prepare as prepare_new
+        return prepare_new(run)
     from nice_validation.transfer_sources import (
         prepare_transfer,
         transfer_tasks,
@@ -242,8 +247,16 @@ def prepare(run: Run) -> None:
         if out is None:
             return
         cfg, root = run.cfg, run.root / "manifests"
+        candidate_count = cfg["experiment"]["candidates"]
+        validation_count = cfg["experiment"]["validation"]
         if cfg["mode"] == "mock":
-            training, validation = fixture()
+            if cfg["experiment"].get("design", "legacy") == "legacy":
+                training, validation = fixture()
+            else:
+                training, validation = fixture(
+                    max(390, candidate_count + candidate_count // 3),
+                    max(60, 2 * validation_count),
+                )
             tokenizer = FixtureTokenizer()
             lock = {
                 "mode": "mock",
@@ -265,9 +278,9 @@ def prepare(run: Run) -> None:
                     raise ValueError("Source revision does not match config")
                 if lock[key]["sha256"] != sha(Path(cfg["data"][key + "_path"])):
                     raise ValueError("Source checksum mismatch")
-            if len(validation) < 31:
+            if len(validation) < validation_count + 1:
                 raise ValueError(
-                    "Main task source must contain at least 31 distinct tasks"
+                    f"Main task source must contain at least {validation_count + 1} distinct tasks"
                 )
             validation, task_report = main_task_records(
                 validation, cfg["data"].get("validation_kind", "swesmith")
@@ -286,9 +299,9 @@ def prepare(run: Run) -> None:
             }
             for row in validation
         ]
-        if len(validation) < 31:
+        if len(validation) < validation_count + 1:
             raise ValueError(
-                "Not enough main tasks after excluding transfer overlap; need 30 validation plus one development task"
+                f"Not enough main tasks after excluding transfer overlap; need {validation_count} validation plus one development task"
             )
         external = transfer_tasks(run)
         external_ids = {
@@ -309,11 +322,11 @@ def prepare(run: Run) -> None:
                 for p in external_prompts
             )
         ]
-        if len(validation) < 31:
+        if len(validation) < validation_count + 1:
             raise ValueError(
-                "Not enough main tasks after excluding transfer overlap; need 30 validation plus one development task"
+                f"Not enough main tasks after excluding transfer overlap; need {validation_count} validation plus one development task"
             )
-        selected, reserve = proportional(validation, 30, 42)
+        selected, reserve = proportional(validation, validation_count, 42)
         development = max(reserve, key=lambda row: row["instance_id"])
         reserve = [
             row for row in reserve if row["instance_id"] != development["instance_id"]
@@ -408,11 +421,11 @@ def prepare(run: Run) -> None:
             ),
         }
         write(root / "filter_report.json", report)
-        if len(unique) < 300:
+        if len(unique) < candidate_count:
             raise ValueError(
-                f"Only {len(unique)} eligible unique tasks; need 300. See {root / 'filter_report.json'}"
+                f"Only {len(unique)} eligible unique tasks; need {candidate_count}. See {root / 'filter_report.json'}"
             )
-        pool, _ = proportional(list(unique.values()), 300, 42)
+        pool, _ = proportional(list(unique.values()), candidate_count, 42)
         for name, value in [
             ("source_lock", lock),
             ("candidates", pool),

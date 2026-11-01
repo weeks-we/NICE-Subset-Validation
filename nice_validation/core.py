@@ -96,7 +96,20 @@ def config(path: str | Path) -> dict:
     if value["mode"] not in {"real", "mock"}:
         raise ValueError("mode must be real or mock")
     exp = value["experiment"]
+    design = exp.get("design", "legacy")
+    if design not in {"legacy", "scaled-main-v1", "verified-selection-v1"}:
+        raise ValueError("Unknown experiment.design")
+    groups = exp.get("groups", ["low", "middle", "high", "random"])
     if (
+        not isinstance(groups, list)
+        or not groups
+        or any(not isinstance(g, str) or g not in {"low", "middle", "high", "random"} for g in groups)
+        or len(set(groups)) != len(groups)
+    ):
+        raise ValueError("experiment.groups must contain distinct supported sampling groups")
+    if design == "legacy" and groups != ["low", "middle", "high", "random"]:
+        raise ValueError("Legacy design requires all four sampling groups")
+    if design == "legacy" and (
         exp["candidates"],
         exp["validation"],
         exp["rollouts"],
@@ -106,7 +119,55 @@ def config(path: str | Path) -> dict:
         raise ValueError(
             "Fixed research design requires 300/30/4/30 and seeds [11,22,33]"
         )
+    if design == "scaled-main-v1":
+        for key in ["candidates", "validation", "subset_size", "rollouts"]:
+            if type(exp[key]) is not int or exp[key] <= 0:
+                raise ValueError(f"experiment.{key} must be a positive integer")
+        if exp["rollouts"] != 4:
+            raise ValueError("Scaled design retains four rollouts per task")
+        seeds = exp["seeds"]
+        if (
+            not isinstance(seeds, list)
+            or not seeds
+            or any(type(s) is not int or s < 0 for s in seeds)
+            or len(set(seeds)) != len(seeds)
+        ):
+            raise ValueError(
+                "Sampling seeds must be a nonempty list of distinct nonnegative integers"
+            )
+        size = exp["candidates"] // 3
+        if exp["subset_size"] > size or math.comb(size, exp["subset_size"]) < len(
+            seeds
+        ):
+            raise ValueError(
+                "Each score stratum must allow one distinct subset per configured seed"
+            )
+    if design == "verified-selection-v1":
+        from nice_validation.experiment_design import validate
+        validate(value)
     tr = value["training"]
+    if type(value["score"].get("parallel", False)) is not bool:
+        raise ValueError("score.parallel must be boolean")
+    for key in ["parallel_check_atol", "parallel_check_rtol"]:
+        tolerance = value["score"].get(key, 1e-6 if key.endswith("atol") else 1e-4)
+        if (
+            isinstance(tolerance, bool)
+            or not isinstance(tolerance, (float, int))
+            or not math.isfinite(tolerance)
+            or tolerance < 0
+        ):
+            raise ValueError(f"score.{key} must be finite and nonnegative")
+    if value.get("schedule") == "phased-independent" and value.get("transfer", {}).get(
+        "enabled"
+    ):
+        raise ValueError("Phased independent experiment is main-only; disable transfer")
+    if value["agent"].get("budget_exhaustion_policy", "fail") not in {
+        "fail",
+        "grade_patch",
+    }:
+        raise ValueError("Unknown agent.budget_exhaustion_policy")
+    if value["agent"].get("context_budget_policy", "strict") not in {"strict", "available"}:
+        raise ValueError("Unknown agent.context_budget_policy")
     for section, keys in [
         ("data", ["max_length"]),
         (
@@ -141,8 +202,15 @@ def config(path: str | Path) -> dict:
         raise ValueError(
             "Fixed research design requires split_seed=42 and shuffle_seed=2026"
         )
-    if (tr["epochs"], tr["effective_batch"], tr["weight_decay"]) != (1, 1, 0):
-        raise ValueError("Research design requires one epoch, batch=1, weight_decay=0")
+    from nice_validation.batching import batch_spec
+
+    batch_spec(tr)
+    if (tr["epochs"], tr["weight_decay"]) != (1, 0) or (
+        design == "legacy" and tr["effective_batch"] != 1
+    ):
+        raise ValueError(
+            "Research design requires one epoch, weight_decay=0; legacy batch=1"
+        )
     if (
         value["score"]["adam_epsilon"] != tr["epsilon"]
         or value["score"]["max_grad_norm"] != tr["max_grad_norm"]
@@ -187,9 +255,12 @@ def source_identity() -> dict:
 def external_identity(cfg: dict) -> dict:
     environment = environment_identity(cfg["mode"])
     if cfg["mode"] == "mock":
-        return {"fixture_version": "synthetic-390-60-v1", "environment": environment}
+        return {
+            "fixture_version": "synthetic-configured-v2",
+            "environment": environment,
+        }
     inputs = {"environment": environment}
-    for key in ["training_path", "validation_path", "source_lock"]:
+    for key in ["training_path", "validation_path", "source_lock", *(["smith_path"] if cfg["experiment"].get("design") == "verified-selection-v1" else [])]:
         path = Path(cfg["data"][key])
         inputs["data:" + key] = sha(path) if path.is_file() else None
     if cfg.get("transfer", {}).get("enabled"):
@@ -231,7 +302,15 @@ def external_identity(cfg: dict) -> dict:
 
 def environment_identity(mode: str = "real") -> dict:
     """Fingerprint installed numerical/protocol code without importing GPU libraries."""
-    packages = ["numpy", "PyYAML", "scipy", "matplotlib", "Pillow", "packaging"]
+    packages = [
+        "numpy",
+        "PyYAML",
+        "scipy",
+        "matplotlib",
+        "Pillow",
+        "packaging",
+        "psutil",
+    ]
     if mode == "real":
         packages += [
             "torch",
@@ -247,6 +326,9 @@ def environment_identity(mode: str = "real") -> dict:
             "swebench",
             "swesmith",
             "harbor",
+            "flash-linear-attention",
+            "causal-conv1d",
+            "kernels",
         ]
     versions, vcs = {}, {}
     for package in packages:
@@ -401,7 +483,17 @@ class Run:
             assigned = (
                 self.cfg["model"]["gpu_uuids"]
                 if self.cfg["mode"] == "real"
-                and (name in {"score", "smoke"} or name.startswith("train:"))
+                and (
+                    (
+                        name == "smoke"
+                        or name == "score"
+                        and not self.cfg["score"].get("parallel", False)
+                    )
+                    or (
+                        name.startswith("train:")
+                        and self.cfg.get("schedule") not in {"phased-independent", "verified-selection"}
+                    )
+                )
                 else []
             )
             memory = {

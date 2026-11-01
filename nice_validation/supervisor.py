@@ -195,6 +195,9 @@ def run_server(
     model_path: Path | None = None,
     recover: bool = False,
     service_gpus: list[str] | None = None,
+    base_config: Path | None = None,
+    model_id: str | None = None,
+    model_loader: str | None = None,
 ) -> dict:
     if platform.system() != "Linux" or sys.version_info < (3, 12):
         raise ValueError("Full server execution requires Linux and Python 3.12+")
@@ -215,6 +218,9 @@ def run_server(
         paths = configure_server(
             *arguments,
             **({"service_gpus": service_gpus} if service_gpus is not None else {}),
+            **({"base_config": base_config} if base_config is not None else {}),
+            **({"model_id": model_id} if model_id is not None else {}),
+            **({"model_loader": model_loader} if model_loader is not None else {}),
         )
         server_file = Path(paths["server_config"])
         service_files = [
@@ -267,8 +273,70 @@ def run_server(
                 services.append(
                     start_service(storage, config(service_file), service_file, port + i)
                 )
-            options = ["run-online"] + (["--recover-lock"] if recover else [])
-            command(storage, "experiment", executable + options, env)
+            if cfg.get("schedule") == "phased-independent":
+                if any(process is None for process, _ in services):
+                    raise ValueError(
+                        "Phased execution requires owned services; choose unused ports"
+                    )
+                if recover:
+                    from nice_validation.cli import recover_lock
+                    from nice_validation.core import Run
+
+                    recover_lock(Run(cfg))
+                command(
+                    storage,
+                    "preflight-prepared",
+                    executable + ["preflight", "--prepared"],
+                    env,
+                )
+                command(storage, "smoke", executable + ["smoke"], env)
+                command(storage, "nice-rollouts", executable + ["rollout-nice"], env)
+                command(
+                    storage,
+                    "initial-evaluation",
+                    executable + ["evaluate", "--model", "initial"],
+                    env,
+                )
+                stop_services(services)
+                services.clear()
+                command(storage, "score", executable + ["score"], env)
+                command(storage, "subsets", executable + ["make-subsets"], env)
+                command(
+                    storage,
+                    "training-batch-probe",
+                    executable + ["tune-training-batch"],
+                    env,
+                )
+                command(
+                    storage, "parallel-training", executable + ["train-parallel"], env
+                )
+                for i, service_file in enumerate(service_files):
+                    services.append(
+                        start_service(
+                            storage, config(service_file), service_file, port + i
+                        )
+                    )
+                if any(process is None for process, _ in services):
+                    raise ValueError(
+                        "Phased services must remain under controller ownership"
+                    )
+                command(
+                    storage,
+                    "preflight-evaluation",
+                    executable + ["preflight", "--prepared"],
+                    env,
+                )
+                for subset in read(Path(cfg["output"]) / "manifests/subsets.json"):
+                    sid = subset["subset_id"]
+                    command(
+                        storage,
+                        "evaluate-" + sid,
+                        executable + ["evaluate", "--model", sid],
+                        env,
+                    )
+            else:
+                options = ["run-online"] + (["--recover-lock"] if recover else [])
+                command(storage, "experiment", executable + options, env)
         except BaseException as exc:
             write(
                 storage / "controller/completion.json",

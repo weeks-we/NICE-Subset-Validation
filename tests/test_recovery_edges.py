@@ -17,7 +17,7 @@ from test_training import train_tiny
 
 
 def initialization_fixture(tmp_path, monkeypatch):
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["execution"] = "server"
     cfg["model"].update(
         {
@@ -111,7 +111,7 @@ def test_resume_rejects_corruption_anywhere_in_published_checkpoint_chain(
 
 @pytest.mark.parametrize("change", [None, "model", "output", "gpu", "malformed"])
 def test_service_health_requires_exact_model_run_and_device(tmp_path, change):
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["output"] = str(tmp_path / "run")
     cfg["model"]["gpu_uuids"] = [GPU_A]
     health = {
@@ -135,7 +135,7 @@ def test_prepared_preflight_checks_service_identity_and_bypasses_proxy(
 ):
     from nice_validation.preflight import preflight
 
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["output"] = str(tmp_path / "run")
     cfg["model"]["gpu_uuids"] = [GPU_A]
     cfg["resources"] = {"gpu_count": 2, "gpu_uuids": [GPU_A, GPU_B]}
@@ -170,7 +170,7 @@ def test_prepared_preflight_checks_service_identity_and_bypasses_proxy(
 
 def test_service_is_stopped_if_pid_evidence_cannot_be_published(tmp_path, monkeypatch):
     (tmp_path / "controller").mkdir()
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["model"]["gpu_uuids"] = [GPU_B]
     monkeypatch.setattr(sup, "health", lambda url: None)
 
@@ -292,7 +292,7 @@ def test_invalid_numeric_budgets_and_zero_learning_rate_are_rejected_before_exec
 
     path.write_text(
         yaml.safe_dump(
-            {"extends": str(Path("configs/main.yaml").resolve()), section: {key: value}}
+            {"extends": str(Path("configs/legacy.yaml").resolve()), section: {key: value}}
         ),
         encoding="utf-8",
     )

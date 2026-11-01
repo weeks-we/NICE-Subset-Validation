@@ -1,116 +1,50 @@
-schema_version: 2
-mode: real
-execution: local
-output: runs/main
-timezone: Asia/Shanghai
+extends: legacy.yaml
+schedule: verified-selection
 model:
   id: Qwen/Qwen3.8-27B
-  revision: null
-  path: null
-  tokenizer_path: null
-  loader: null
-  dtype: bfloat16
-  thinking: false
-  device: cuda:0
-  gpu_uuids: []
-  attention: sdpa
-  gradient_checkpointing: true
-  lora_targets: [q_proj, k_proj, v_proj, o_proj]
-  rank: 16
-  alpha: 32
-  adapter_path: null
+  loader: AutoModelForImageTextToText
+  reuse_base_for_inference: true
+  selective_logits: true
 data:
-  training_id: SWE-bench/SWE-smith-trajectories
-  validation_id: SWE-bench/SWE-smith
-  validation_kind: swesmith
-  validation_split: train
-  training_revision: null
-  validation_revision: null
-  training_path: data/training.jsonl
-  validation_path: data/validation.jsonl
-  source_lock: data/source_lock.json
-  hub_cache: null
-  datasets_cache: null
-  max_length: 32768
-  duplicate_similarity: 0.9
+  validation_id: SWE-bench/SWE-bench_Verified
+  validation_kind: swebench
+  validation_split: test
+  smith_id: SWE-bench/SWE-smith
+  smith_revision: null
+  smith_path: data/smith_tasks.jsonl
 experiment:
-  candidates: 300
-  validation: 30
-  rollouts: 4
-  subset_size: 30
-  seeds: [11, 22, 33]
-  split_seed: 42
-  shuffle_seed: 2026
-  budget_probes: 1000
-  budget_tolerance: 0.1
-  sample_attempts: 10000
-score:
-  projection_dim: 8192
-  projection_seed: 42
-  zero_epsilon: 1.0e-12
-  adam_epsilon: 1.0e-8
-  max_grad_norm: 1.0
-  mask_version: assistant-rendered-delta-v3-tool-groups
-  loss_version: assistant-token-mean-v1
-  low_reward_coverage: 0.2
-  logprob_atol_per_token: 0.005
+  design: verified-selection-v1
+  candidates: 2000
+  validation: 20
+  sft_validation: 100
+  benchmark: 100
+  rollouts: 8
+  subset_size: 512
+  seeds: [11]
+  groups: [low, high]
+  strata: halves
 training:
-  learning_rate: 1.0e-5
-  betas: [0.9, 0.999]
-  epsilon: 1.0e-8
-  weight_decay: 0.0
-  max_grad_norm: 1.0
-  epochs: 1
-  effective_batch: 1
+  learning_rate: 1.0e-6
+  learning_rates: [1.0e-6, 5.0e-6]
+  checkpoints: [0.25, 0.5, 1.0]
+  effective_batch: 8
+  micro_batch_size: auto
+  micro_batch_candidates: [1, 2, 4]
+score:
+  parallel: true
+  parallel_check_atol: 1.0e-6
+  parallel_check_rtol: 1.0e-4
 agent:
-  max_actions: 30
-  max_new_tokens: 2048
-  total_new_tokens: 16384
-  context_length: 32768
-  wall_seconds: 1200
-  tool_seconds: 120
-  infra_retries: 2
-  service_url: http://127.0.0.1:8765
-  workers: 1
-  service_endpoints: [http://127.0.0.1:8765]
-  image_map: null
-  image_revision_lock: null
-  smoke_task_path: null
-  workdir: /testbed
-  evaluation_timeout: 1800
-  protocol: swe-agent-shell-v2-qwen-native
-  swebench_revision: null
-  swesmith_revision: null
+  tasks_per_gpu: 2
+  max_actions: 75
+  max_new_tokens: 32768
+  total_new_tokens: 262144
+  context_length: 131072
+  context_budget_policy: available
+  history_observations: 5
+  budget_exhaustion_policy: grade_patch
+  wall_seconds: 3600
+  tool_seconds: 300
+  evaluation_timeout: 3600
 transfer:
-  enabled: true
-  sample_size: 50
-  seed: 42
-  source_lock: data/transfer_sources.json
-  harbor_revision: null
-  live_revision: null
-  live_python: null
-  checkouts: data/benchmark_repos
-  suites:
-    verified:
-      backend: swebench
-      id: SWE-bench/SWE-bench_Verified
-      split: test
-      revision: null
-    pro:
-      backend: harbor
-      id: scaleapi/SWE-bench_Pro-os
-      version: public-v2
-      revision: null
-      task_subdir: v2/tasks
-    live:
-      backend: live
-      id: SWE-bench-Live/SWE-bench-Live
-      split: full
-      revision: null
-      namespace: starryzhang
-    terminal:
-      backend: harbor
-      id: laude-institute/terminal-bench-2
-      version: '2.0'
-      revision: null
-      task_subdir: .
+  enabled: false

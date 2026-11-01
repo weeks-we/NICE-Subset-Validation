@@ -345,7 +345,7 @@ def test_native_task_changes_are_rejected(tmp_path):
 def test_official_grader_dispatch_keeps_benchmarks_separate(
     tmp_path, monkeypatch, backend, module
 ):
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["agent"]["image_map"] = str(tmp_path / "images.json")
     cfg["transfer"]["live_python"] = "/isolated/live/python"
     write(
@@ -401,7 +401,7 @@ def test_native_agent_tool_round_trip_uses_local_adapter_and_public_instruction(
     tmp_path, monkeypatch
 ):
     module = harbor_module(monkeypatch)
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     adapter = tmp_path / "adapter"
     adapter.mkdir()
     (adapter / "fixture.txt").write_text("synthetic adapter")
@@ -504,7 +504,7 @@ def test_source_resolver_freezes_live_and_terminal_version(monkeypatch):
         return io.BytesIO(json.dumps(value).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", remote)
-    sources = resolve_sources(config("configs/main.yaml"))
+    sources = resolve_sources(config("configs/legacy.yaml"))
     assert sources["terminal"]["revision"] == "c" * 40
     assert any("python-only" in url for url in queried)
     assert any("/" + "b" * 40 + "/registry.json" in url for url in queried)

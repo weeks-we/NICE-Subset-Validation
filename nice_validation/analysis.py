@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 
 from nice_validation.core import Run, read, read_jsonl, write
+from nice_validation.design import counts, sampling_groups, strata_ranges
+from nice_validation.batching import steps_per_epoch, metric_members
 
 
 FIGURES = [
@@ -136,6 +138,7 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
         if out is None:
             return
         root, mock = run.root, run.cfg["mode"] == "mock"
+        design = counts(run.cfg)
         candidates = optional(root, "scores/candidate_scores.json", [])
         subsets = optional(root, "manifests/subsets.json", [])
         tasks = optional(root, "manifests/validation.json", [])
@@ -177,6 +180,11 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
                     "training_seconds": training.get("wall_seconds"),
                     "updates": training.get("updates"),
                     "exposures": training.get("exposures"),
+                    "effective_batch": training.get("effective_batch"),
+                    "micro_batch_size": training.get("micro_batch_size"),
+                    "gradient_accumulation_steps": training.get(
+                        "gradient_accumulation_steps"
+                    ),
                     "initial_adapter_sha256": training.get("initial_adapter_sha256"),
                     "gpu_hours": training.get("gpu_hours"),
                     "evaluation_status": evaluation["status"],
@@ -217,7 +225,7 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
             if e["event"] == "failed" or e.get("status") == "INFRA_ERROR"
         ]
         groups = []
-        for group in COLORS:
+        for group in sampling_groups(run.cfg):
             members = [s for s in usable if s["group"] == group]
             gains = [s["plot_gain"] for s in members]
             groups.append(
@@ -227,7 +235,11 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
                     "mean_gain": float(np.mean(gains)) if gains else None,
                     "min_gain": min(gains) if gains else None,
                     "max_gain": max(gains) if gains else None,
-                    "interpretation": "three overlapping sampling repeats; no independence claim",
+                    "interpretation": (
+                        "one sampling seed; no sampling stability estimate"
+                        if len(run.cfg["experiment"]["seeds"]) == 1
+                        else f"{len(run.cfg['experiment']['seeds'])} overlapping sampling repeats; no independence claim"
+                    ),
                     "mode": run.cfg["mode"],
                 }
             )
@@ -276,7 +288,7 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
                 if candidates
                 else None
             ),
-            "chart_rationale": "Histogram for candidate distribution; raw member points for subset distributions; scatter for score/gain; all three points per group; no KDE or significance tests.",
+            "chart_rationale": "Histogram for candidate distribution; raw member points for subset distributions; scatter for score/gain; show all available points per group; no KDE or significance tests.",
         }
         write(root / "figures" / "data_profile.json", profile)
         out.append(root / "figures" / "data_profile.json")
@@ -294,15 +306,16 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
             for stage in ["train", "evaluate"]
         ]
         complete = (
-            len(summary) == 12
-            and len(usable) == 12
-            and len(task_ids) == 30
+            len(summary) == design["branches"]
+            and len(usable) == design["branches"]
+            and len(task_ids) == design["validation"]
             and all(run.valid(stage) for stage in required)
         )
         report = {
             "title": "Single initial checkpoint NICE-style scoring validation",
             "mode": run.cfg["mode"],
             "formal_evidence": not mock and complete,
+            "experiment_design": design,
             "status": (
                 "synthetic_fixture"
                 if mock
@@ -319,6 +332,9 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
             + len(optional(root, "rollouts/nice/results.json", [])),
             "episode_attempts": sum(e["event"] == "episode_attempt" for e in events),
             "successful_updates": sum(t.get("updates", 0) for t in all_train),
+            "training_exposures": sum(t.get("exposures", 0) for t in all_train),
+            "training_batch_plan": optional(root, "training_batch/plan.json", None),
+            "parallel_nice": optional(root, "scores/parallel_summary.json", None),
             "transfer_summary": (
                 "transfer/summary.json"
                 if run.cfg.get("transfer", {}).get("enabled")
@@ -328,10 +344,22 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
                 "transfer_episode_count", 0
             ),
             "limitations": [
-                "SWE-smith validation is shared by scoring and same-task evaluation; held-out transfer evidence is reported separately.",
-                "12 overlapping subsets and 30 shared tasks are not independent repeats.",
-                "Three sampling seeds do not measure training seed stability.",
-                "One resolved task changes the success rate by 3.33 percentage points.",
+                "SWE-smith validation is shared by NICE scoring and main evaluation; it is not an independent test set.",
+                (
+                    "Held-out transfer evidence is reported separately."
+                    if run.cfg.get("transfer", {}).get("enabled")
+                    else "External benchmarks are disabled. This experiment provides no held-out transfer evidence."
+                ),
+                f"{design['branches']} subsets evaluated on {design['validation']} shared tasks are not independent repeats.",
+                *([
+                    "Only two trained subsets are compared; their rank correlation describes one pair, not a stable score-gain relationship."
+                ] if design["branches"] == 2 else []),
+                (
+                    "Only one sampling seed is used; sampling-seed and training-seed stability cannot be estimated."
+                    if len(run.cfg["experiment"]["seeds"]) == 1
+                    else f"{len(run.cfg['experiment']['seeds'])} sampling seeds do not measure training-seed stability."
+                ),
+                f"One resolved task changes the success rate by {100 / design['validation']:.2f} percentage points.",
                 "Logical tokens exclude checkpointing recomputation and are not FLOPs.",
             ],
             "conclusion": (
@@ -352,10 +380,10 @@ def analyze(run: Run, allow_mock: bool = False) -> None:
         if run.cfg.get("transfer", {}).get("enabled"):
             text += "Held-out transfer: see [transfer/report.md](transfer/report.md) and transfer/tables/summary.csv. Four fixed 50-task suites; never used for NICE scoring or training.\n\n"
         text += "Primary score: fresh_adam_cosine. Diagnostic: raw_grad_cosine.\n\n"
-        text += "| subset | score | resolved/30 | gain |\n|---|---:|---:|---:|\n"
+        text += f"| subset | score | resolved/{design['validation']} | gain |\n|---|---:|---:|---:|\n"
         for s in summary:
             gain = f"{s['plot_gain']:+.4f}" if s["plot_gain"] is not None else "null"
-            text += f"| {s['subset_id']} | {s['fresh_adam_cosine']:.5f} | {s['resolved_count']}/30 ({s['evaluation_status']}) | {gain} |\n"
+            text += f"| {s['subset_id']} | {s['fresh_adam_cosine']:.5f} | {s['resolved_count']}/{design['validation']} ({s['evaluation_status']}) | {gain} |\n"
         text += "\n" + (
             "All rates and gains above are synthetic demo values.\n\n" if mock else ""
         )
@@ -446,7 +474,12 @@ def plots(
     if candidates:
         vals = sorted(score_map.values())
         ax.hist(vals, bins=25, color="#0072B2", edgecolor="white")
-        for boundary in [99, 199]:
+        for boundary in [
+            end - 1
+            for start, end in list(
+                strata_ranges(run.cfg["experiment"]["candidates"]).values()
+            )[:2]
+        ]:
             if len(vals) > boundary:
                 ax.axvline(vals[boundary], color="black", linestyle="--", linewidth=1)
     ax.set(xlabel="fresh Adam cosine", ylabel="Candidate count")
@@ -465,7 +498,10 @@ def plots(
             alpha=0.7,
         )
     ax.set_yticks(range(len(subsets)), [s["subset_id"] for s in subsets])
-    ax.set(xlabel="Member fresh Adam cosine", ylabel="Subset (30 members each)")
+    ax.set(
+        xlabel="Member fresh Adam cosine",
+        ylabel=f"Subset ({run.cfg['experiment']['subset_size']} members each)",
+    )
     save(fig, "subset_distributions")
 
     fig, ax = plt.subplots(figsize=(7.2, 4.6), layout="constrained")
@@ -521,24 +557,26 @@ def plots(
     save(fig, "score_gain")
 
     fig, ax = plt.subplots(figsize=(7.2, 3.6), layout="constrained")
-    for index, group in enumerate(COLORS):
+    configured_groups = sampling_groups(run.cfg)
+    for index, group in enumerate(configured_groups):
         vals = [
             s["plot_gain"]
             for s in summaries
             if s["group"] == group and s["plot_gain"] is not None
         ]
         ax.scatter(
-            index + np.linspace(-0.12, 0.12, len(vals)),
+            index
+            + (np.zeros(1) if len(vals) == 1 else np.linspace(-0.12, 0.12, len(vals))),
             vals,
             color=COLORS[group],
             marker=MARKERS[group],
             s=45,
         )
-    ax.set_xticks(range(4), list(COLORS))
+    ax.set_xticks(range(len(configured_groups)), configured_groups)
     ax.axhline(0, color="0.6", linewidth=0.7)
     ax.set(
         ylabel="Gain in resolved fraction",
-        xlabel="Sampling group (3 overlapping subsets per group)",
+        xlabel=f"Sampling group ({len(run.cfg['experiment']['seeds'])} subset(s) per group)",
     )
     save(fig, "group_gains")
 
@@ -610,23 +648,29 @@ def audit(run: Run) -> dict:
             )
 
         root = run.root
+        design = counts(run.cfg)
+        ranges = strata_ranges(design["candidates"])
         candidates = optional(root, "manifests/candidates.json", [])
         tasks = optional(root, "manifests/validation.json", [])
         subsets = optional(root, "manifests/subsets.json", [])
         scores = optional(root, "scores/candidate_scores.json", [])
         check(
             "candidate_count_unique",
-            len(candidates) == len({r["instance_id"] for r in candidates}) == 300,
+            len(candidates)
+            == len({r["instance_id"] for r in candidates})
+            == design["candidates"],
             "manifests/candidates.json",
         )
         check(
             "validation_count_unique",
-            len(tasks) == len({r["instance_id"] for r in tasks}) == 30,
+            len(tasks)
+            == len({r["instance_id"] for r in tasks})
+            == design["validation"],
             "manifests/validation.json",
         )
         check(
             "score_count_finite",
-            len(scores) == 300
+            len(scores) == design["candidates"]
             and all(
                 math.isfinite(r[k])
                 for r in scores
@@ -636,15 +680,31 @@ def audit(run: Run) -> dict:
         )
         check(
             "random_groups_scored",
-            sum(s["group"] == "random" for s in subsets) == 3
+            sum(s["group"] == "random" for s in subsets)
+            == (len(run.cfg["experiment"]["seeds"]) if "random" in sampling_groups(run.cfg) else 0)
             and all(
                 "fresh_adam_cosine" in s and "raw_grad_cosine" in s for s in subsets
             ),
             "manifests/subsets.json",
         )
+        expected_branches = {
+            (g, seed) for g in sampling_groups(run.cfg) for seed in run.cfg["experiment"]["seeds"]
+        }
+        check(
+            "configured_sampling_branches",
+            len(subsets) == len(expected_branches)
+            and {(s.get("group"), s.get("sampling_seed")) for s in subsets}
+            == expected_branches
+            and all(
+                s.get("subset_id") == f"{s.get('group')}_{s.get('sampling_seed')}"
+                for s in subsets
+            ),
+            "manifests/subsets.json; experiment.seeds",
+        )
         check(
             "subset_count_members",
-            len(subsets) == 12 and all(len(set(s["members"])) == 30 for s in subsets),
+            len(subsets) == design["branches"]
+            and all(len(set(s["members"])) == design["subset_size"] for s in subsets),
             "manifests/subsets.json",
         )
         check(
@@ -664,8 +724,11 @@ def audit(run: Run) -> dict:
         )
         strata = optional(root, "manifests/strata.json", {})
         check(
-            "strata_100_each",
-            all(len(strata.get(g, [])) == 100 for g in ["low", "middle", "high"]),
+            "strata_configured_sizes",
+            all(
+                len(strata.get(g, [])) == end - start
+                for g, (start, end) in ranges.items()
+            ),
             "manifests/strata.json",
         )
         score_by_id = {r["data_id"]: r for r in scores}
@@ -674,8 +737,8 @@ def audit(run: Run) -> dict:
             "strata_follow_primary_score",
             bool(ordered)
             and all(
-                strata.get(g) == [r["data_id"] for r in ordered[start : start + 100]]
-                for g, start in [("low", 0), ("middle", 100), ("high", 200)]
+                strata.get(g) == [r["data_id"] for r in ordered[start:end]]
+                for g, (start, end) in ranges.items()
             ),
             "manifests/strata.json",
         )
@@ -712,15 +775,58 @@ def audit(run: Run) -> dict:
         ]
         check(
             "common_initial_adapter",
-            len(training) == 12
+            len(training) == design["branches"]
             and len({t.get("initial_adapter_sha256") for t in training}) == 1
             and all(t.get("initial_adapter_sha256") for t in training),
             "training/*/training.json",
         )
         check(
             "exact_one_pass_updates",
-            len(training) == 12
-            and all(t.get("updates") == t.get("exposures") == 30 for t in training),
+            len(training) == design["branches"]
+            and all(
+                t.get("updates")
+                == steps_per_epoch(design["subset_size"], run.cfg["training"])
+                and t.get("exposures") == design["subset_size"]
+                for t in training
+            ),
+            "training/*/step_*.metrics.json",
+        )
+        if run.cfg["training"].get("micro_batch_size") == "auto":
+            try:
+                from nice_validation.batch_tuning import training_config
+
+                selected_cfg, plan_sha = training_config(run)
+                correct = all(
+                    t.get("batch_plan_sha256") == plan_sha
+                    and t.get("effective_batch") == selected_cfg["effective_batch"]
+                    and t.get("micro_batch_size") == selected_cfg["micro_batch_size"]
+                    for t in training
+                )
+            except (ValueError, OSError, KeyError):
+                correct = False
+            check(
+                "common_measured_batch_plan",
+                correct,
+                "training_batch/plan.json; training/*/training.json",
+            )
+        actual_exposures = []
+        for s in subsets:
+            metrics = [
+                read(p)
+                for p in sorted(
+                    (root / "training" / s["subset_id"]).glob("step_*.metrics.json")
+                )
+            ]
+            members = [m for row in metrics for m in metric_members(row)]
+            actual_exposures.append(
+                len(metrics)
+                == steps_per_epoch(design["subset_size"], run.cfg["training"])
+                and len(members) == len(set(members)) == design["subset_size"]
+                and set(members) == set(s["members"])
+            )
+        check(
+            "exact_metric_exposures",
+            bool(actual_exposures) and all(actual_exposures),
             "training/*/step_*.metrics.json",
         )
         check(
@@ -733,10 +839,11 @@ def audit(run: Run) -> dict:
         )
         main_results = optional(root, "rollouts/nice/results.json", [])
         check(
-            "nice_120_episodes",
-            len(main_results) == 120
+            "nice_configured_episodes",
+            len(main_results) == design["nice_episodes"]
             and all(
-                sum(r["task_id"] == t["instance_id"] for r in main_results) == 4
+                sum(r["task_id"] == t["instance_id"] for r in main_results)
+                == run.cfg["experiment"]["rollouts"]
                 for t in tasks
             ),
             "rollouts/nice/results.json",
@@ -748,12 +855,12 @@ def audit(run: Run) -> dict:
                 "evaluation_denominator:" + model,
                 task_rate(result, [t["instance_id"] for t in tasks])["status"]
                 == "completed"
-                and len(tasks) == 30,
+                and len(tasks) == design["validation"],
                 f"evaluation/{model}/results.json",
             )
         check(
-            "510_main_episodes",
-            len(main_results) == 510,
+            "configured_main_episodes",
+            len(main_results) == design["main_episodes"],
             "evaluation/*/results.json; rollouts/nice/results.json",
         )
         check(
@@ -762,6 +869,23 @@ def audit(run: Run) -> dict:
             "logs/events.jsonl",
         )
         diagnostics = optional(root, "scores/diagnostics.json", {})
+        if run.cfg["score"].get("parallel", False):
+            parallel = optional(root, "scores/parallel_summary.json", {})
+            check(
+                "parallel_nice_coverage_and_reference",
+                parallel.get("run_identity") == run.identity
+                and parallel.get("mode") == run.cfg["mode"]
+                and parallel.get("gpu_uuids")
+                == run.cfg.get("resources", {}).get("gpu_uuids")
+                and parallel.get("candidate_count") == design["candidates"]
+                and parallel.get("validation_count") == design["validation"]
+                and sum(parallel.get("candidate_counts", [])) == design["candidates"]
+                and sum(parallel.get("validation_counts", [])) == design["validation"]
+                and parallel.get("reference_checks_passed") is True
+                and parallel.get("per_example_batch") == 1
+                and parallel.get("optimizer_updates") == 0,
+                "scores/parallel_summary.json; scores/shards/plan.json",
+            )
         check(
             "score_cache_identity",
             bool(scores)
@@ -772,7 +896,8 @@ def audit(run: Run) -> dict:
         )
         check(
             "reward_signal",
-            diagnostics.get("zero_gradient_tasks", 30) < 30,
+            diagnostics.get("zero_gradient_tasks", design["validation"])
+            < design["validation"],
             "scores/diagnostics.json",
         )
         check(

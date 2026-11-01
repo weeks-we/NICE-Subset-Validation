@@ -108,12 +108,18 @@ def gradient_features(
 
 
 def score(run: Run) -> None:
+    if run.cfg["score"].get("parallel", False):
+        from nice_validation.parallel_scoring import score_parallel
+
+        return score_parallel(run)
     if not run.valid("prepare-data") or not run.valid("rollout-nice"):
         raise ValueError("Complete prepare-data and rollout-nice first")
     with run.stage("score") as out:
         if out is None:
             return
         cfg = run.cfg
+        validation_count = cfg["experiment"]["validation"]
+        rollout_count = cfg["experiment"]["rollouts"]
         candidates = read(run.root / "manifests" / "candidates.json")
         tasks = read(run.root / "manifests" / "validation.json")
         episodes = read(run.root / "rollouts" / "nice" / "results.json")
@@ -126,14 +132,18 @@ def score(run: Run) -> None:
         validation_cost = 0
         for task in tasks:
             records = [r for r in episodes if r["task_id"] == task["instance_id"]]
-            if len(records) != 4 or any(r["status"] == "INFRA_ERROR" for r in records):
+            if len(records) != rollout_count or any(
+                r["status"] == "INFRA_ERROR" for r in records
+            ):
                 raise ValueError(
                     "Validation rollout incomplete; fixed four-episode reward estimate unavailable"
                 )
             if cfg["mode"] == "mock":
                 rng = np.random.default_rng(int(digest(task["instance_id"])[:8], 16))
                 direction = (
-                    rng.normal(size=128) * sum(r["resolved"] for r in records) / 4
+                    rng.normal(size=128)
+                    * sum(r["resolved"] for r in records)
+                    / rollout_count
                 )
                 h.append(
                     sketch(
@@ -148,7 +158,9 @@ def score(run: Run) -> None:
                     if record["resolved"]:
                         replay = read(run.root / record["evidence_path"] / "trace.json")
                         for step in replay:
-                            alignment = runtime.replay_backward(step, scale=0.25)
+                            alignment = runtime.replay_backward(
+                                step, scale=1 / rollout_count
+                            )
                             run.event(
                                 "score",
                                 "generation_replay_alignment",
@@ -173,7 +185,7 @@ def score(run: Run) -> None:
         if coverage == 0:
             write(
                 run.root / "scores" / "failure.json",
-                {"reason": "ALL_VALIDATION_DIRECTIONS_ZERO", "tasks": 30},
+                {"reason": "ALL_VALIDATION_DIRECTIONS_ZERO", "tasks": validation_count},
             )
             raise ValueError(
                 "All validation reward directions are zero; scoring/training blocked"
@@ -255,11 +267,12 @@ def score(run: Run) -> None:
             (
                 "diagnostics",
                 {
-                    "zero_gradient_tasks": 30 - coverage,
-                    "reward_coverage": coverage / 30,
+                    "zero_gradient_tasks": validation_count - coverage,
+                    "reward_coverage": coverage / validation_count,
                     "warning": (
                         "LOW_REWARD_COVERAGE"
-                        if coverage / 30 < cfg["score"]["low_reward_coverage"]
+                        if coverage / validation_count
+                        < cfg["score"]["low_reward_coverage"]
                         else None
                     ),
                     "cache_identity": cache_identity,

@@ -16,7 +16,7 @@ def cfg(tmp_path):
 def test_config_rejects_research_drift(tmp_path):
     p = tmp_path / "invalid.yaml"
     p.write_text(
-        f"extends: {Path('configs/main.yaml').resolve().as_posix()}\nexperiment:\n  candidates: 2000\n"
+        f"extends: {Path('configs/legacy.yaml').resolve().as_posix()}\nexperiment:\n  candidates: 2000\n"
     )
     with pytest.raises(ValueError, match="Fixed research"):
         config(p)

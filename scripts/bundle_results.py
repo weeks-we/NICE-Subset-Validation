@@ -28,6 +28,8 @@ def main():
             "audit.md",
             "doctor.json",
             "cost_estimate.json",
+            "selection.json",
+            "figures/layout_audit.json",
         ]
     ]
     for folder, pattern in [
@@ -36,6 +38,9 @@ def main():
         ("figures", "*.pdf"),
         ("config", "*.json"),
         ("manifests", "*.json"),
+        ("training_batch", "*.json"),
+        ("scores", "diagnostics.json"),
+        ("scores", "parallel_summary.json"),
         ("transfer/tables", "*.csv"),
         ("transfer/figures", "*.png"),
         ("transfer/figures", "*.pdf"),
@@ -53,6 +58,8 @@ def main():
                 "validation_reserve.json",
                 "mapping.json",
                 "development_task.json",
+                "sft_validation.json",
+                "benchmark.json",
             }
         }
     )

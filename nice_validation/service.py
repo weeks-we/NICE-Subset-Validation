@@ -33,6 +33,16 @@ class RuntimeManager:
         key = (str(adapter), checksum)
         if self.key == key and self.runtime is not None:
             return self.runtime
+        if self.runtime is not None and self.cfg.get("model", {}).get("reuse_base_for_inference"):
+            try:
+                self.runtime.switch_adapter(adapter)
+                if self.runtime.adapter_identity != checksum:
+                    raise ValueError("Switched adapter checksum mismatch")
+            except BaseException:
+                self.close()
+                raise
+            self.key = key
+            return self.runtime
         if self.runtime is not None:
             previous, self.runtime, self.key = self.runtime, None, None
             previous.close()

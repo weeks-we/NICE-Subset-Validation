@@ -114,7 +114,7 @@ def test_real_git_first_checkout_recovery_and_dirty_rejection(
 
 
 def test_terminal_acquisition_uses_only_registered_tasks(tmp_path, monkeypatch):
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["execution"] = "server"
     cfg["transfer"].update(
         {
@@ -156,7 +156,7 @@ def test_child_environment_routes_gpu_and_keeps_loopback_off_proxy(monkeypatch):
 
 
 def test_service_reuse_requires_exact_model_source_and_gpu(tmp_path, monkeypatch):
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["model"]["gpu_uuids"] = [GPU_B]
     monkeypatch.setattr(sup, "service_identity", lambda c: c["model"]["revision"])
     cfg["model"]["revision"] = "a" * 40
@@ -230,7 +230,7 @@ def test_server_orders_entire_flow_and_always_stops_owned_service(
 def test_health_identity_changes_with_model_output_and_role_is_independent(tmp_path):
     from nice_validation.service import service_identity
 
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["output"] = str(tmp_path)
     original = service_identity(cfg)
     changed = copy.deepcopy(cfg)

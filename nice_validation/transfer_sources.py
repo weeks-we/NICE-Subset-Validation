@@ -22,7 +22,7 @@ SUITES = ("verified", "pro", "live", "terminal")
 def task_identities(row: dict) -> set[str]:
     return {
         value
-        for key in ["instance_id", "source_instance_id"]
+        for key in ["instance_id", "source_instance_id", "source_family_id"]
         if isinstance(value := row.get(key), str) and value
     }
 

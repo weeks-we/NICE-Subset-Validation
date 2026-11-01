@@ -1,31 +1,15 @@
-# 数据流与代码验证映射
+# 当前代码数据流与检查点
 
-推荐从 `scripts/run_server.py` 进入，由 `nice_validation/supervisor.py` 管理生命周期。以下路径相对于服务器 `<storage>`，configure_server 将其生成绝对路径；main/example 配置含占位项，不能直接真实执行。
+1. scripts/run_server.py → experiment_server.py：新 clone / 环境 / 授权 GPU 与控制器生命周期。
+2. experiment_online.py：旧来源锁与 model_lock 核验、三个原始 split 复用/下载、新配置、新初始 adapter、环境预检。
+3. experiment_data.py：Verified 20/100 拆分，SWE-smith 轨迹清洗、2000 候选、未入池轨迹对应 100 验证任务、独立开发题、泄漏检查。
+4. harness.py + model.py + service.py：多轮模型/工具/Docker、实际 token IDs、原始工具证据、固定预算与官方判分；常驻底座切 LoRA。
+5. scoring.py + parallel_scoring.py + score_features.py：8 次奖励方向、逐样本 LoRA 梯度、共享参考与投影、缓存恢复、NICE 排名。
+6. subsets.py：分数升序二等分、高低各 512、共同 token 预算、单 seed。
+7. experiment_design.py + experiment_training.py：4 jobs/12 points、两个 LR、真实有效 batch、原子发布节点、可信断点恢复。
+8. batch_tuning.py + batching.py：全卡容量/吞吐测量、统一 micro-batch、按轨迹平均的累计梯度；不按成绩调 batch。
+9. experiment_parallel.py：4 卡训练、其余验证，训练进程退出后全卡加入推理池；训练 worker 只写分支，主进程发布全局阶段。
+10. experiment.py：独立 selection/benchmark/nice_retest 结果空间、三节点内选择、平分更早；冻结选择后仅 initial 和四个选中权重运行 100 题 benchmark 及原 NICE 20 题单次 greedy 诊断复测。
+11. experiment_report.py + bundle_results.py：严格计数、模式与 checksum 审计、配对 CSV、图布局与合成标识、小型 zip。
 
-SWE-bench官方API基线为v4.1.0（完整commit冻结），适配SWE-smith现有判分接口。compatibility.harness_api和安装后的pip check在模型下载前拦截版本/接口不兼容；Verified镜像命名空间与正式grader一致。test_final_review另覆盖单侧同源元数据隔离、主Agent多轮/多工具/失败观察回传，以及原生reward缺少Agent证据时拒绝接受结果。
-
-2026-10-28 补充真实接口验证：下载少量原始训练轨迹、SWE-smith/Verified/Live记录、Pro原生任务及Terminal2.0注册commit的原生任务，直接调用当前校验/分词/官方转换代码。主集抽样之前用 `data.main_task_records` 排除空题面；`schemas.task_record` 分别校验三种HF任务格式，不给Live补造version；`compatibility.model_loader_api` 在权重下载前导入实际模型类。`test_source_schemas` 做字段缺失/空值注入；`test_official_model_interface` 用实际Transformers/PEFT和随机小型混合注意力Qwen进行CPU加载、有限差分、更新、回放与重载测试。真实目标权重、Docker判分及H200容量仍须服务器验收。
-
-最后严格复核新增 `test_parquet_interface`：实际datasets/Arrow获取与截断JSONL恢复；`test_patch_baseline`：真实Git的固定起点、Agent commit、LF/CRLF、暂存/新文件/二进制重放、仓库破坏与Docker故障分流、Pro相同起点重判和真实重判标记。主任务使用冻结SHA及bytes补丁；Pro在setup记录干净起点，通过Harbor文件下载保留补丁字节，重判先核对起点。官方模型测试另实际调用generate和NICE反传，确认候选与验证两端都是LoRA梯度、基座梯度为None、评分不改变参数，并保留pad_token_id=0。
-
-| 块 | 来源与输出 | 代码 | CPU 验证 |
-|---|---|---|---|
-| 版本与路径 | HF 模型/数据 + GitHub harness → data/source_revisions.json、configs/*.local.yaml；两张独立GPU | online.resolve_sources/configure_server | test_online、test_supervisor：commit固定、配置幂等、绝对路径、已有模型证据 |
-| 在线获取 | SWE-smith trajectories/tool → data/training.jsonl；SWE-smith/train → data/validation.jsonl；来源/SHA → data/source_lock.json | acquire.hf_split、data.fetch_data | test_online：split范围、分片、断线/尾行/发布恢复、防改 |
-| 迁移来源 | Verified/test、Live/full → JSONL；Pro v2/tasks、Terminal2.0注册路径 → data/benchmark_repos；data/transfer_sources.json | transfer_sources.acquire_transfer/checkout | test_transfer、test_supervisor：Git首次检出/中断恢复、注册集边界、源与task文件SHA |
-| 清洗与隔离 | 先冻结外部4×50；排除任务/家族/近似文本重叠；主30、开发1、成功候选300 → runs/main/manifests | data.prepare、protocol | test_data_state、test_protocol_regressions、test_online、test_transfer |
-| 模型与初始状态 | Qwen/Qwen3.8-27B固定revision → models/Qwen3.8-27B、model_lock.json；tokenizer同路径；models/initial_adapter | model.fetch_model/initialize_adapter/Runtime | test_online、test_math、test_supervisor；实际目标模块由服务器smoke验收 |
-| 监督与梯度 | assistant有效token均值CE；奖励轨迹NLL求和/固定4次分母；Adam初步方向→CountSketch | protocol、model、scoring | test_math、test_protocol_regressions：CPU有限差分、符号/归一化/零梯度、实际Runtime方法 |
-| 子集与训练 | 300→3个100分层+全池；每类3个30条条件抽样；独立12×30更新 → training | subsets、training | test_subsets、test_training：token预算、重叠、共同初始、optimizer/RNG恢复逐值一致 |
-| 主任务执行 | 独立容器、隐藏测试隔离、官方SWE-smith grader → 120 NICE+390正式同题episode | environments、harness、scripts/swesmith_grade.py | test_harness、test_swesmith、test_server_guards：协议、期限、隐藏历史、判分接线 |
-| 外部执行 | 13模型×4套×50；Verified/Live官方harness；Pro全新环境补丁重判；TB原生reward | transfer、harbor_agent、harbor_runner | test_transfer：原生环境/镜像/奖励分流、重试、不完整固定分母 |
-| 服务与托管 | 服务GPU→loopback；启动、身份核对、失败收尾、停止后分析、audit/zip → controller | service、supervisor、scripts/run_server.py | test_supervisor、test_server_guards：GPU路由、代理绕过、拒绝错误服务、顺序与失败清理 |
-| 分析与图 | 主结果 + transfer/summary → CSV/9类PNG/PDF/灰度/审计 | analysis、transfer_analysis | test_cli_pipeline、test_transfer：完整mock、52行、固定50、正式null、resume、增量分析 |
-
-原始数据在服务器在线准备，未加入 Git；本机没有正式数据、目标模型或镜像。HF/GitHub main 只在首次解析元数据时使用，此后下载、安装和恢复使用完整 commit。Terminal2.0 的任务列表与 commit 来自固定 Harbor registry，不混入同仓库未注册任务。Live 使用 `<storage>/envs/live/bin/python`，隔离同名 swebench 包。
-
-默认GPU池8张，可用--num-gpus调整（至少2），gpus.select_gpus遵守授权池或可见设备顺序；online生成1份主配置和N−1份服务配置，supervisor逐个管理独立GPU/端口/日志。主任务和外部benchmark按原任务索引取模分片，排序汇总且不改随机种子；评分和训练仍单卡顺序执行。test_gpu_pool覆盖2/4/8卡、设备不足、可见范围、启动失败清理，以及四套200题的真实线程并行路由。
-
-test_recovery_edges补充：初始adapter中断不发布半成品、已存在目录不覆盖、基座锁与模块一致、完整检查点链校验、已完成episode汇总发布中断不重跑、prepared服务身份与GPU校验、PID记录失败关闭新进程，以及无效预算/零学习率/矛盾结果标签拒绝。正式成功率只接受status与resolved一致且题目齐全的结果。
-
-服务与梯度端共享模型、tokenizer、adapter、精度、模板和工具定义，GPU UUID分开。健康状态包含源码/环境/模型/运行身份，不能把任意ready进程当正确服务。完整长度更新、真实模型logprob对齐和Docker grader仍需服务器证据，失败阻止正式实验。
+新流程测试见 test_experiment.py、test_experiment_parallel.py、test_new_model_runtime.py、test_parallel_scoring.py、test_batched_training.py。原有数学、mask、数据格式、补丁、官方接口、异常与恢复测试继续作为基础回归；它们使用 legacy/development 配置，不定义本轮实验。

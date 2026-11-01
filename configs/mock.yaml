@@ -1,0 +1,38 @@
+extends: main.yaml
+mode: mock
+output: runs/verified-selection-mock
+model:
+  device: cpu
+score:
+  projection_dim: 128
+agent:
+  workers: 16
+  service_endpoints:
+    - http://127.0.0.1:8765
+    - http://127.0.0.1:8766
+    - http://127.0.0.1:8767
+    - http://127.0.0.1:8768
+    - http://127.0.0.1:8769
+    - http://127.0.0.1:8770
+    - http://127.0.0.1:8771
+    - http://127.0.0.1:8772
+    - http://127.0.0.1:8765
+    - http://127.0.0.1:8766
+    - http://127.0.0.1:8767
+    - http://127.0.0.1:8768
+    - http://127.0.0.1:8769
+    - http://127.0.0.1:8770
+    - http://127.0.0.1:8771
+    - http://127.0.0.1:8772
+resources:
+  layout: verified-selection
+  gpu_count: 8
+  gpu_uuids:
+    - GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+    - GPU-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+    - GPU-cccccccc-cccc-cccc-cccc-cccccccccccc
+    - GPU-dddddddd-dddd-dddd-dddd-dddddddddddd
+    - GPU-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee
+    - GPU-ffffffff-ffff-ffff-ffff-ffffffffffff
+    - GPU-11111111-1111-1111-1111-111111111111
+    - GPU-22222222-2222-2222-2222-222222222222

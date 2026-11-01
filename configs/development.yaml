@@ -1,4 +1,4 @@
-extends: main.yaml
+extends: legacy.yaml
 mode: mock
 output: runs/mock
 model:

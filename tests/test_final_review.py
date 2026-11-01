@@ -66,7 +66,7 @@ def test_harness_api_checks_actual_required_names_and_signatures(monkeypatch, br
         del constants.DOCKER_PATCH
     elif broken == "signature":
         installed[names[3]].run_patch_in_container = lambda task, patch=None: None
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["transfer"]["enabled"] = False
     if broken:
         with pytest.raises(ValueError, match="mismatch"):
@@ -107,7 +107,7 @@ def test_source_resolver_freezes_compatible_release_not_mutable_main(monkeypatch
         return io.BytesIO(json.dumps({"sha": "b" * 40}).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", remote)
-    cfg = config("configs/main.yaml")
+    cfg = config("configs/legacy.yaml")
     cfg["transfer"]["enabled"] = False
     assert resolve_sources(cfg)["swebench"]["revision"] == "b" * 40
     assert queried[0].endswith("/commits/" + SWEBENCH_REF)
