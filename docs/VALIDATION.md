@@ -1,5 +1,18 @@
 # 本地验证记录
 
+## 2026-11-01 资源定位与全流程再复核
+
+研究配置与既有数据版本策略保持不变；不自动切换上游最新 revision。复核启动、依赖、来源定位、清洗与集合隔离、NICE/LoRA、四分支与阶段选择、benchmark/原题复测、进程回收和交付。
+
+- 修复旧 storage 移位后只依赖失效绝对路径的问题：模型按旧 snapshot 优先，必要时在旧 storage/models 根与直接子目录、指定 revision 的默认缓存中按可信锁定位；多份匹配明确要求 --model-path。相对数据路径以旧 storage 为根，失效绝对前缀允许按 data 下原文件名核验定位。
+- 修复 prefix-limit 数据被当作完整数据复用的问题：保持旧 revision，在新 storage 补齐完整 split，不覆盖旧前缀文件。复用前对来源锁/sidecar/内容 checksum 对照，原文件存在但校验失败仍停止。
+- prepared preflight 增加 SWE-smith 配套任务来源的 revision/文件/ID/split/无 limit/checksum 检查。data/reuse.json 新增逐来源复用或补齐原因及模型 revision；HANDOFF 说明实际旧 storage 的定位与核验步骤。
+- 4 个新资源定位回归在修复前失败、修复后通过；另有 6 个配套任务预检边界用例。最终同一独立环境全量 **338 passed，0 failed，0 skipped，282.38 秒**，日志 `runs/a-resource-audit-pytest-20261101.log`。
+- 新全尺寸 mock、独立串行参考、恢复、审计与结果包校验通过：2000 候选，256 更新，2048 曝光，2060 episode；2000 分数和 20 方向与串行参考一致，4040 缓存文件 checksum 不变，权重选择不变，audit 无 FAIL。合成 zip 1,443,048 字节，不是正式实验成绩。
+- 只读服务器启动计划默认 8 卡，git diff --check 通过。未下载目标权重或运行 GPU/Docker，未 commit/push；用户现有 RSI 两份规划文档未修改。
+
+证据：被忽略的 `runs/a-resource-audit-full-20261101/validation_checks.json`、`runs/a-resource-audit-verification-20261101.log`、`runs/verify_resource_audit_20261101.py`。详细本地报告 `runs/RESOURCE_AUDIT_20261101.md`。真实路径可用性、131072/32768 NICE 反向容量和 221 个已选任务容器仍需服务器实际验收。
+
 ## 2026-11-01 追加：原 NICE 题复测与扩大 token 预算
 
 当前正式协议更新为：75 轮、每次输出 32768、整题累计输出 262144、上下文 131072 token，交互墙钟 3600 秒、单工具 300 秒。NICE、SFT 验证、benchmark 与原题复测使用同一预算；SFT 教师轨迹上限仍为 32768。真实 smoke 强制核验完整上下文及 32768 输出位置的 NICE 反向容量，短输出测试不能代替。

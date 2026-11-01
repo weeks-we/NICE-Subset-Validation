@@ -6,6 +6,52 @@ from nice_validation.core import config, read, write, require_commit, sha
 from nice_validation.experiment_design import DESIGN
 
 
+def locate_old_model(old, old_cfg, old_records, identifier):
+    """Prefer the recorded path; recover moved storage only from matching locks."""
+    recorded = old_cfg.get("model", {}).get("path")
+    if recorded:
+        path = Path(recorded)
+        path = (path if path.is_absolute() else old / path).resolve()
+        if path.exists():
+            return path  # Existing but corrupt evidence must fail, not fall back.
+    revision = old_records.get("model", {}).get("revision")
+    locks = list((old / "models").glob("*/model_lock.json"))
+    locks += [old / "models/model_lock.json"]
+    if revision:
+        cache = old / "cache/hub" / ("models--" + identifier.replace("/", "--"))
+        locks.append(cache / "snapshots" / revision / "model_lock.json")
+    matches = set()
+    for lock in locks:
+        if lock.is_file():
+            metadata = read(lock)
+            if metadata.get("id") == identifier and metadata.get("revision") == revision:
+                matches.add(lock.parent.resolve())
+    if len(matches) > 1:
+        raise ValueError("Ambiguous reused model locations; supply the actual --model-path")
+    if matches:
+        return next(iter(matches))
+    raise ValueError("Reused model directory not found in snapshot/models/cache; supply the actual --model-path")
+
+
+def locate_old_raw(old, entry, kind):
+    recorded = Path(entry["path"])
+    path = (recorded if recorded.is_absolute() else old / recorded).resolve()
+    if not path.exists():
+        # A moved storage root can invalidate the original absolute prefix.
+        path = (old / "data" / recorded.name).resolve()
+        if not path.is_relative_to(old):
+            raise ValueError("Relocated raw source escaped old storage: " + kind)
+    if not path.is_file() or sha(path) != entry["sha256"]:
+        raise ValueError("Old raw source checksum mismatch: " + kind)
+    sidecar = path.with_suffix(path.suffix + ".source.json")
+    if not sidecar.is_file():
+        raise ValueError("Old raw source provenance sidecar missing")
+    metadata = read(sidecar)
+    if any(metadata.get(k) != entry.get(k) for k in ["id", "revision", "split", "limit", "sha256", "records"]):
+        raise ValueError("Old raw source lock/sidecar mismatch: " + kind)
+    return path
+
+
 def configure(storage, gpus, destination, reuse_from=None, model_path=None, port=8765,
               base_config=None):
     from nice_validation.gpus import validate_pool
@@ -34,7 +80,7 @@ def configure(storage, gpus, destination, reuse_from=None, model_path=None, port
             if path.is_file():
                 raw_entries.extend(read(path).values())
         if not model_path:
-            model_path = old_cfg.get("model", {}).get("path") or old / "models/Qwen3.8-27B"
+            model_path = locate_old_model(old, old_cfg, old_records, cfg["model"]["id"])
 
     def old_source(kind, identifier):
         keys = {"training": ["training"], "validation": ["verified", "validation"],
@@ -104,6 +150,7 @@ def configure(storage, gpus, destination, reuse_from=None, model_path=None, port
     slots = cfg["agent"].get("tasks_per_gpu", 1)
     cfg["resources"] = {"gpu_count": len(gpus), "gpu_uuids": list(gpus),
                          "inference_gpu_uuids": list(gpus) * slots, "layout": "verified-selection"}
+    raw_reuse = {}
     for kind, split in [("training", "tool"), ("validation", "test"), ("smith", "train")]:
         cfg["data"][kind + "_revision"] = records[kind]["revision"]
         target = storage / "data" / (kind + ".jsonl")
@@ -113,11 +160,16 @@ def configure(storage, gpus, destination, reuse_from=None, model_path=None, port
             if len(matches) > 1:
                 raise ValueError("Ambiguous old raw source " + kind)
             if matches:
-                target = Path(matches[0]["path"]).resolve()
-                if not target.is_file() or sha(target) != matches[0]["sha256"]:
-                    raise ValueError("Old raw source checksum mismatch: " + kind)
-                if not target.with_suffix(target.suffix + ".source.json").is_file():
-                    raise ValueError("Old raw source provenance sidecar missing")
+                previous = locate_old_raw(old, matches[0], kind)
+                if matches[0].get("limit") is None:
+                    target = previous
+                    raw_reuse[kind] = {"action": "reuse", "path": str(previous),
+                        "revision": records[kind]["revision"], "records": matches[0].get("records"),
+                        "sha256": matches[0]["sha256"]}
+                else:
+                    raw_reuse[kind] = {"action": "download_full_pinned_split", "reason": "old source is prefix-limited",
+                        "old_path": str(previous), "revision": records[kind]["revision"]}
+        raw_reuse.setdefault(kind, {"action": "download_full_pinned_split", "revision": records[kind]["revision"]})
         cfg["data"][kind + "_path"] = str(target)
     cfg["data"]["source_lock"] = str(storage / "data/source_lock.json")
     for key, name in [("hub_cache", "hub"), ("datasets_cache", "datasets")]:
@@ -146,6 +198,7 @@ def configure(storage, gpus, destination, reuse_from=None, model_path=None, port
             write(path, value)
     write(storage / "data/reuse.json", {"reuse_from": str(old) if old else None,
           "model_path": str(model_path), "raw_sources": {k: cfg["data"][k + "_path"] for k in ["training", "validation", "smith"]},
+          "model_revision": records["model"]["revision"], "raw_source_actions": raw_reuse,
           "policy": "reuse only frozen base/tokenizer/raw sources/cache; never reuse old gradients, task splits or trained adapters"})
     return {"server_config": str(destination / "server.local.yaml"), "service_configs": services}
 

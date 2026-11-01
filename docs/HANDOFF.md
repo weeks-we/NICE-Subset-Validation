@@ -51,6 +51,12 @@ Verified 20 题用于 NICE，并在最后单独复测；另外 100 题只用于�
 
 模型优先读取旧 snapshot 的真实 model.path，也可显式传 `--model-path`。必须具有可信 model_lock.json，核对 ID、revision、全部文件 checksum 与官方 context 容量。已有合格模型直接使用，不重新下载或复制；校验会读取大文件，不代表正在下载。缺可信锁时先依据原下载记录、固定 Hub commit 与内容核实来源，不能随手造锁跳过检查。确有缺失才获取对应固定版本。
 
+Claude 先从旧启动命令、生成配置或 `controller/completion.json` 定位旧 storage，再传 `--reuse-from`；文中的 `/data/old-experiment` 是占位示例，不能直接假定存在。代码优先使用 snapshot 中的路径；旧路径因搬目录失效时，只在该旧 storage 的 `models/` 根与直接子目录、对应 revision 的默认 Hugging Face 缓存中查找匹配 ID/revision 的 model_lock。只有一个匹配才自动选，多份匹配时 Claude 根据旧配置确认并显式传 `--model-path`。显式路径存在但校验失败会停止，不能改用另一份模型掩盖损坏。
+
+原始文件支持旧 storage 相对路径；旧绝对前缀失效时尝试旧 storage 的 `data/<原文件名>`，仍须通过来源锁、sidecar 与内容 checksum。旧文件若只是 `limit=N` 的前缀导出，不将它当成完整集：在新 storage 下载同一固定 revision 的完整 split，旧文件保留。版本保持不变，不因补齐文件自动切换最新 revision。
+
+启动后先检查新 storage 的 `data/reuse.json`：`model_path/model_revision` 是实际复用模型，`raw_sources` 是三类数据的实际路径，`raw_source_actions` 逐项说明复用或补齐下载及原因。下载完成再与 `data/source_lock.json` 中的 ID/revision/split/records/checksum 对照；核验时向师兄简报实际数据版本和条数，不只说“应该已下载”。prepared preflight 现在逐项检查 tool、Verified test 和 SWE-smith train 三类来源，包括新增配套任务的文件与 revision。
+
 只复用基座/tokenizer、原始数据、下载缓存与已有 Docker 镜像层。重新建立初始 LoRA、数据清洗与划分、NICE rollout/梯度、选样、SFT、选权重与最终结果。不要整体链接旧 data、models 或 runs：这些目录还包含旧 adapter、任务映射和来源快照。
 
 ## 唯一正式启动入口

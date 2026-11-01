@@ -59,6 +59,14 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
             add(section + "." + key, True, cfg[section][key])
         except ValueError as exc:
             add(section + "." + key, False, str(exc))
+    source_kinds = ["training", "validation"]
+    if cfg["experiment"].get("design") == "verified-selection-v1":
+        source_kinds.append("smith")
+        try:
+            require_commit(cfg["data"].get("smith_revision"), "data.smith_revision")
+            add("data.smith_revision", True, cfg["data"]["smith_revision"])
+        except ValueError as exc:
+            add("data.smith_revision", False, str(exc))
     for section, key in [
         ("model", "path"),
         ("model", "adapter_path"),
@@ -165,7 +173,7 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
         ]
         paths += [
             (key, Path(cfg["data"][key]))
-            for key in ["training_path", "validation_path", "source_lock"]
+            for key in [*[kind + "_path" for kind in source_kinds], "source_lock"]
         ]
         paths += [
             (key, Path(cfg["agent"].get(key) or "."))
@@ -182,12 +190,15 @@ def preflight(cfg: dict, prepared: bool = False, network: bool = False) -> dict:
         lock_path = Path(cfg["data"]["source_lock"])
         if lock_path.is_file():
             lock = read(lock_path)
-            for kind in ["training", "validation"]:
+            for kind in source_kinds:
                 path = Path(cfg["data"][kind + "_path"])
                 entry = lock.get(kind, {})
                 add(
                     "source_identity:" + kind,
                     path.is_file()
+                    and entry.get("id") == cfg["data"][kind + "_id"]
+                    and entry.get("split") == {"training": "tool", "validation": cfg["data"]["validation_split"], "smith": "train"}[kind]
+                    and entry.get("limit") is None
                     and entry.get("revision") == cfg["data"][kind + "_revision"]
                     and entry.get("sha256") == sha(path),
                     str(path),

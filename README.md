@@ -27,6 +27,8 @@ python scripts/run_server.py --storage-root /data/nice-a-verified-v2 --reuse-fro
 
 `--reuse-from` 指旧 storage 根，不是旧 Git 目录。必要时另加 `--model-path /实际模型目录`。复用核验包含 model_lock.json、固定 revision 和原始数据 sidecar/checksum。新实验的初始 LoRA、清洗/抽样、评分、训练和结果重新生成。旧模型目录不写入，权重不复制也不重复下载；新进程仍需从磁盘装入 GPU。
 
+旧路径搬迁时按旧 storage 内的可信锁和 checksum 定位资源；旧数据若只导出了前缀，则在新目录补齐同 revision 完整 split。实际模型/数据路径与复用决策记录在新 storage 的 `data/reuse.json`，三类来源的最终版本/条数见 `data/source_lock.json`。
+
 本机验证，不触及目标权重或 GPU：
 
 ```bash
