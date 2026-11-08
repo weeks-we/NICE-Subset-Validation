@@ -210,3 +210,11 @@ python -m nice_validation --config configs/development.yaml --output runs/local-
 没有下载 Qwen 权重，没有启动目标模型或真实训练，没有运行 GPU、多卡、容器或官方 SWE-bench 实测。真实数据 ID/revision/checksum 尚待服务器冻结。模型架构与模板、LoRA 模块、tool split 实际记录、官方 harness 安装 commit、任务镜像、生成/回放 logprob、32768 长度显存、吞吐及并行稳定性，都需要按 HANDOFF.md 先做独立真实 smoke。
 
 初次测试还暴露了本机 NumPy/PyTorch BLAS 运行库冲突和 pytest 临时目录 ACL 问题。代码改用显式向量归约计算 norm/余弦/秩相关；CPU 测试使用继承工作区权限的临时目录。没有关闭数值检查，也没有设置 KMP_DUPLICATE_LIB_OK 来掩盖冲突。
+# 2026-11-08 预构建部署检查
+
+新增 docs/Dockerfile、部署说明、服务器 agent prompt、任务镜像 prepare/load/check 脚本及 preinstalled/offline 入口。默认研究参数不变；不支持跨源码/数值环境身份搬运旧正式结果。
+
+- 全量 CPU/微型随机模型回归：353 passed（227.51 秒）。新增 12 个部署测试覆盖 catalog 篡改、任务/harness/内容 ID 不匹配、镜像缺失、可变标签、隔离声明、任务集合重叠、缺本地输入和 registry 推送失败。
+- 新完整 mock：2060 episode、2000 候选、4 分支、12 节点、4 份选择；串行评分一致、恢复无重复、audit 无 FAIL、CSV/PNG/zip 检查通过。6 张 PNG 与此前核验版本字节一致。mock 不作为研究结果。
+- 本地记录：runs/deployment-pytest-final-20261108.log、runs/deployment-full-20261108/validation_checks.json、runs/deployment-verification-20261108.log。
+- 未在本机构建 Docker、下载目标权重或执行真实 GPU；公司基础镜像、依赖锁、registry、Docker daemon/挂载与官方判分离线链路仍需服务器验收。预检不等于平台级外网阻断。

@@ -219,6 +219,8 @@ def acquire(cfg):
                    "revision": cfg["data"][kind + "_revision"], "split": split, "limit": None}.items()) or entry["sha256"] != sha(target):
                 raise ValueError("Raw source provenance/checksum mismatch: " + kind)
         else:
+            if cfg.get("deployment", {}).get("offline"):
+                raise ValueError("Offline raw source missing: " + str(target))
             entry = hf_split(cfg["data"][kind + "_id"], cfg["data"][kind + "_revision"],
                              split, target, "download", True, cfg["data"])
         entries[kind] = {**entry, "path": str(target)}
@@ -237,6 +239,9 @@ def prepare_online(cfg, download_model=True):
     from nice_validation.data import prepare
     from nice_validation.online import development_task
     server_only(cfg)
+    if cfg.get("deployment", {}).get("offline"):
+        from nice_validation.deployment import local_inputs
+        local_inputs(cfg)
     readiness = preflight(cfg)
     write(Path(cfg["output"]) / "preflight-bootstrap.json", readiness)
     if readiness["status"] != "PASS":

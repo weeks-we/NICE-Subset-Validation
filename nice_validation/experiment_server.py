@@ -32,9 +32,12 @@ def run_server(storage, gpus, destination, model_path=None, reuse_from=None,
             if frozen.exists():
                 if read(frozen)["external_inputs"]["environment"] != environment_identity("real"):
                     raise ValueError("Frozen environment changed; use a new environment/storage pair")
-            else:
+            elif not cfg.get("deployment", {}).get("preinstalled"):
                 command(storage, "install-harness", [sys.executable, "scripts/install_harness.py",
                          "--config", paths["server_config"]], env)
+            if cfg.get("deployment", {}).get("preinstalled"):
+                from nice_validation.environments import official_identity
+                official_identity(cfg)
             command(storage, "preflight", executable + ["preflight"], env)
             if recover and frozen.is_file():
                 from nice_validation.cli import recover_lock

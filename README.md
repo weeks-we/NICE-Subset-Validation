@@ -2,6 +2,8 @@
 
 完整服务器交接见 [HANDOFF](docs/HANDOFF.md)，配置权威为 [main.yaml](configs/main.yaml)。
 
+公司镜像平台部署见 [构建与运行说明](docs/DEPLOYMENT.md)、[Dockerfile](docs/Dockerfile) 和 [发给服务器 agent 的简短 prompt](docs/SERVER_AGENT_PROMPT.md)。
+
 | 项目 | 当前设计 |
 |---|---|
 | 基座 | 复用原固定版本 Qwen/Qwen3.8-27B 与 tokenizer，BF16 LoRA |

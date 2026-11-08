@@ -5,6 +5,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import os
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from nice_validation.gpus import add_gpu_arguments, gpu_arguments
@@ -55,7 +56,15 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     args.config_dir = (repo / args.config_dir).resolve()
     # Never reinstall before resuming a frozen environment.
-    if not (args.storage_root / "runs/main/config/snapshot.json").exists():
+    from nice_validation.core import config
+    preinstalled = config(args.base_config).get("deployment", {}).get("preinstalled", False)
+    if config(args.base_config).get("deployment", {}).get("offline"):
+        if not preinstalled:
+            parser.error("Offline deployment requires preinstalled=true")
+        if not args.reuse_from and not (args.storage_root / "data/source_revisions.json").is_file():
+            parser.error("Offline startup requires pinned --reuse-from or existing source revisions")
+        os.environ.update(HF_HUB_OFFLINE="1", HF_DATASETS_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PIP_NO_INDEX="1")
+    if not preinstalled and not (args.storage_root / "runs/main/config/snapshot.json").exists():
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", str(repo) + "[server,dev]"],
             cwd=repo,

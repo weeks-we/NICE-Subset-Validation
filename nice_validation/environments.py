@@ -186,9 +186,20 @@ def prepare_environments(run: Run) -> None:
                     "Development smoke task must be outside the main validation set"
                 )
             tasks.append(development)
+        prebuilt = None
+        if run.cfg.get("deployment", {}).get("offline"):
+            from nice_validation.deployment import catalog_for
+            try:
+                prebuilt = catalog_for(run.cfg, tasks, client, identity)
+            except BaseException:
+                client.close()
+                raise
         try:
             for task in tasks:
                 try:
+                    if prebuilt is not None:
+                        mapping[task["instance_id"]] = prebuilt[task["instance_id"]]
+                        continue
                     backend = task.get(
                         "evaluation_backend",
                         run.cfg["data"].get("validation_kind", "swesmith"),

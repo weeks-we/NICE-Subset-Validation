@@ -1,0 +1,24 @@
+# Copy as .dockerignore in an isolated build context, not over an existing file.
+.git
+.venv
+venv
+**/__pycache__
+**/.pytest_cache
+runs
+main-res
+data
+models
+cache
+.cache
+.aws
+.codex
+.agents
+.env
+.env.*
+**/*.pem
+**/*.key
+**/*.pt
+**/*.safetensors
+**/*.zip
+deployment/*
+!deployment/runtime.lock.txt

@@ -260,6 +260,9 @@ def external_identity(cfg: dict) -> dict:
             "environment": environment,
         }
     inputs = {"environment": environment}
+    if cfg.get("deployment", {}).get("offline"):
+        catalog = Path(cfg["deployment"]["task_catalog"])
+        inputs["deployment_task_catalog"] = sha(catalog) if catalog.is_file() else None
     for key in ["training_path", "validation_path", "source_lock", *(["smith_path"] if cfg["experiment"].get("design") == "verified-selection-v1" else [])]:
         path = Path(cfg["data"][key])
         inputs["data:" + key] = sha(path) if path.is_file() else None

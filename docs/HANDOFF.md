@@ -2,6 +2,8 @@
 
 本文件取代此前 A/B 交接。当前只有根项目，运行 `scripts/run_server.py`；B 目录已移除。`configs/legacy.yaml` 与 development.yaml 只保留历史工程回归，不能用于这次正式实验。
 
+公司内网预构建部署另见 [DEPLOYMENT](DEPLOYMENT.md)、[Dockerfile](Dockerfile) 和 [服务器 agent 简短 prompt](SERVER_AGENT_PROMPT.md)。已完成阶段先核验，不盲目重跑；预构建部署不能绕过旧运行的源码/环境身份校验。
+
 ## 交给服务器 Claude Code 的执行指令
 
 > 阅读根目录 AGENTS.md、README.md 和本文件，使用新的代码 clone、独立 Python 环境与新存储根，完成环境核验、旧基座及原始数据复用、新数据划分、真实 smoke、NICE、四个 LoRA 训练分支、十二个节点验证、四份权重选择、最终 benchmark、审计及打包。用户授权在分配的 Linux/8×H200-144GB 上安装依赖、获取公开固定版本资源、使用 Docker、执行与恢复实验及修复工程问题。正常依赖、路径、下载、进程问题自主解决并保留日志，不只给出计划或要求师兄逐条代跑。先查找旧实验的 storage 根、config snapshot、source_revisions 和 model_lock，核验可复用资源；不要重复下载或复制已有大模型权重。不得修改旧证据、覆盖旧 snapshot、拿旧选样/梯度/权重冒充新实验，不按 benchmark 成绩选权重或重试模型失败。代码/环境变化导致身份不兼容时保留旧目录，新建存储继续。只在确有权限、凭据、容量或外部服务阻塞且无法自行解决时报告具体原因。完成后检查实际 CSV、PNG、audit 与逐题计数，返回 results zip 和 completion.json。不要 commit/push Git。
