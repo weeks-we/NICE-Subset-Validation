@@ -7,11 +7,51 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 from urllib.parse import urlsplit
 
-from nice_validation.core import read, sha
+from nice_validation.core import read, sha, digest
+
+
+def adapter_identity(folder: Path) -> str:
+    return digest({str(p.relative_to(folder)): sha(p) for p in sorted(folder.rglob('*'))
+                   if p.is_file() and p.name != 'identity.json'})
+
+
+def check_base_contents(base: Path, files: dict) -> list[str]:
+    """Require a complete local weight/tokenizer manifest, not an empty lock."""
+    errors = []
+    if not isinstance(files, dict) or not files:
+        return ['empty or invalid model file manifest']
+    required = {'config.json', 'tokenizer_config.json'}
+    if not required.issubset(files) or not ({'tokenizer.json', 'tokenizer.model'} & set(files)):
+        errors.append('model config/tokenizer files absent from lock')
+    indexes = [name for name in files if name.endswith('.safetensors.index.json')]
+    weights = [name for name in files if name.endswith('.safetensors')]
+    if not weights:
+        errors.append('model weights absent from lock')
+    if len(weights) > 1 and not indexes:
+        errors.append('multiple weight files require a locked shard index')
+    for name in indexes:
+        try:
+            path = (base / name).resolve()
+            if not path.is_relative_to(base.resolve()):
+                raise ValueError('index escapes base')
+            shards = set(read(path)['weight_map'].values())
+            if not shards or not shards.issubset(files):
+                errors.append('weight index references unlocked/missing shards')
+        except (OSError, ValueError, KeyError, TypeError):
+            errors.append('invalid weight shard index')
+    for name, meta in files.items():
+        path = (base / name).resolve()
+        expected = meta.get('sha256') if isinstance(meta, dict) else None
+        if (not path.is_relative_to(base.resolve()) or not path.is_file()
+                or not isinstance(expected, str) or not re.fullmatch('[0-9a-f]{64}', expected)
+                or sha(path) != expected):
+            errors.append('missing/invalid/checksum mismatch: ' + name)
+    return errors
 
 
 def independent_paths(old: Path, output: Path):
@@ -72,6 +112,19 @@ def inventory(old: Path, inspect=None) -> dict:
             issues.append({"model": name, "missing": missing})
         else:
             adapters[name] = {"path": str(folder.resolve()), "files": {p.name: sha(p) for p in files}}
+            evidence_path = folder / 'identity.json' if name == 'initial' else folder.parent / 'checkpoint.json'
+            try:
+                evidence = read(evidence_path)
+                actual = adapter_identity(folder)
+                if evidence.get('adapter_sha256') != actual:
+                    raise ValueError('adapter differs from original identity/checkpoint evidence')
+                if name != 'initial' and (evidence.get('model_id') != name or evidence.get('run_identity') != snapshot['identity']):
+                    raise ValueError('checkpoint model/run identity differs')
+                if name == 'initial' and evidence.get('model_revision') != cfg['model']['revision']:
+                    raise ValueError('initial adapter model revision differs')
+                adapters[name].update(identity_sha256=actual, evidence_sha256=sha(evidence_path))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                issues.append({'model': name, 'reason': 'original adapter evidence: ' + str(exc)})
     base = Path(cfg["model"]["path"])
     base_lock = base / "model_lock.json"
     if not base_lock.is_file():
@@ -80,10 +133,14 @@ def inventory(old: Path, inspect=None) -> dict:
         lock = read(base_lock)
         if lock.get("revision") != cfg["model"]["revision"] or lock.get("id") != cfg["model"]["id"]:
             issues.append({"base": str(base), "reason": "model identity differs"})
-        for name, meta in lock.get("files", {}).items():
-            path = (base / name).resolve()
-            if not path.is_relative_to(base.resolve()) or not path.is_file() or sha(path) != meta["sha256"]:
-                issues.append({"base_file": name, "reason": "missing or checksum mismatch"})
+        for error in check_base_contents(base, lock.get('files', {})):
+            issues.append({'base_file': str(base), 'reason': error})
+        if 'initial' in adapters:
+            try:
+                if read(Path(models['initial']) / 'identity.json').get('model_lock_sha256') != sha(base_lock):
+                    issues.append({'model': 'initial', 'reason': 'initial adapter base-lock evidence differs'})
+            except (OSError, ValueError, TypeError):
+                pass  # Already reported as missing/invalid adapter evidence above.
     image_cache, scopes, ids = {}, {}, set()
     inspector = inspect or inspect_image
     for scope, filename, expected_count, image_scope in [

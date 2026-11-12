@@ -11,6 +11,8 @@
 
 ## 第一步：盘点，优先复用
 
+2026-11-12增强：盘点必须核对原 initial/identity.json 与各 checkpoint.json 的 adapter_sha256，核对训练 run/model 身份及 initial 的基座锁身份；基座锁不得为空或只含 config，必须覆盖 tokenizer、权重及索引引用的所有分片。缺证据时阻止，不在旧目录重新生成锁冒充原证据。
+
 在拥有原storage及原Docker daemon访问权限的Linux环境执行：
 
 ```bash
@@ -59,6 +61,8 @@ python scripts/prepare_reevaluation.py \
 ## 第四步：执行器接入验收清单
 
 ### 已提供的真实CLI/工具smoke
+
+2026-11-12增强：smoke要求至少三条assistant事件、Read/Write/Bash工具与至少三次无错误工具返回。模型先复制随机内容，随后通过Bash运行Python生成新的随机挑战，必须据此再写正确答案。记录观察到的thinking块数量，但不将其当历史thinking回传证明；它仍不是真实SWE开发题、LoRA数值、压缩或官方判分验收。当前GPU八卡调度和新协议断点恢复尚未接入执行器，旧流程的能力不能计为新流程已实现。
 
 Claude Code是下载并安装的程序，不是远程Claude模型；固定发行物、依赖和必要运行库在公司构建阶段装进本地任务运行层，正式计算不在线安装。新入口scripts/smoke_reevaluation.py支持在授权Linux服务器进行真实接入验收（本机只做显式mock/CPU测试）：
 

@@ -22,9 +22,10 @@ with tempfile.TemporaryDirectory(prefix='nice-cli-smoke-') as directory:
     root=pathlib.Path(directory)
     nonce=secrets.token_hex(24)
     (root/'source.txt').write_text(nonce)
+    (root/'verify.py').write_text("import pathlib,secrets\nr=pathlib.Path('.')\nassert (r/'proof.txt').read_text()==(r/'source.txt').read_text()\np=secrets.token_hex(24)\n(r/'challenge.txt').write_text(p)\nprint('NEXT_CHALLENGE='+p)\n")
     env=dict(os.environ,HOME=str(root/'home'),CLAUDE_CONFIG_DIR=str(root/'home/.claude'))
     pathlib.Path(env['HOME']).mkdir()
-    prompt='Use file tools to read source.txt in the current directory, then create proof.txt containing exactly the same content. Verify the file and finish. Do not ask questions. This is a tool integration check, not a coding benchmark.'
+    prompt='Complete these steps in order, waiting for each tool result. First read source.txt with Read. Next create proof.txt with Write containing exactly that content. Next use Bash to execute python verify.py. It verifies your file and generates a NEW random challenge that does not exist before execution. Finally use Write to create answer.txt containing exactly the NEXT_CHALLENGE value returned by Bash. Do not use Bash to write answer.txt. Do not ask questions. Finish after writing answer.txt. This is an integration check, not a benchmark.'
     result=subprocess.run(['claude','-p',prompt,'--model',model,'--max-turns','12',
         '--tools','Bash,Read,Edit,Write,Glob,Grep','--dangerously-skip-permissions',
         '--output-format','stream-json','--verbose'],cwd=root,env=env,
@@ -36,15 +37,29 @@ with tempfile.TemporaryDirectory(prefix='nice-cli-smoke-') as directory:
         except ValueError:pass
     finals=[e for e in events if e.get('type')=='result']
     tool_calls=[]
+    assistant_rounds=0
+    thinking_blocks=0
+    tool_results=[]
     for e in events:
         if e.get('type')=='assistant':
+            assistant_rounds+=1
             for block in e.get('message',{}).get('content',[]):
                 if block.get('type')=='tool_use':tool_calls.append(block.get('name'))
+                if block.get('type')=='thinking' and block.get('thinking'):thinking_blocks+=1
+        if e.get('type')=='user':
+            for block in e.get('message',{}).get('content',[]):
+                if block.get('type')=='tool_result':tool_results.append(block)
+    challenge_ok=((root/'challenge.txt').is_file() and (root/'answer.txt').is_file()
+        and (root/'challenge.txt').read_text()==(root/'answer.txt').read_text())
     passed=(result.returncode==0 and finals and not finals[-1].get('is_error',False)
-        and tool_calls and (root/'proof.txt').is_file() and (root/'proof.txt').read_text()==nonce)
+        and assistant_rounds>=3 and {'Read','Write','Bash'}.issubset(tool_calls)
+        and len(tool_results)>=3 and not any(b.get('is_error') for b in tool_results)
+        and challenge_ok and (root/'proof.txt').is_file() and (root/'proof.txt').read_text()==nonce)
     print(json.dumps({'status':'PASS' if passed else 'FAIL','model':model,'cli_version':version,
         'tool_calls':tool_calls,'exit_code':result.returncode,'events':events,
-        'stderr':result.stderr,'scope':'real CLI/model/file-tools integration only'}))
+        'assistant_rounds':assistant_rounds,'tool_result_count':len(tool_results),
+        'thinking_blocks_observed':thinking_blocks,'challenge_verified':bool(challenge_ok),
+        'stderr':result.stderr,'scope':'real multi-round CLI/model/Read/Write/Bash feedback only; thinking continuity and official grade not certified'}))
     if not passed:sys.exit(1)
 '''
 

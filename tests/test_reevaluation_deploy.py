@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from nice_validation.core import sha, write
-from nice_validation.reevaluation_deploy import independent_paths, inventory, network_environment, probe_network
+from nice_validation.reevaluation_deploy import independent_paths, inventory, network_environment, probe_network, adapter_identity, check_base_contents
 
 
 @pytest.mark.parametrize("url", ["http://localhost:8000", "http://127.0.0.1:8000", "http://0.0.0.0:8000", "https://user:secret@service", "http://service/v1", "http://service?token=x", "file:///tmp/model"])
@@ -72,8 +72,16 @@ def fixture_run(tmp_path):
 def test_inventory_reads_exact_120_tasks_and_preserves_old_evidence(tmp_path):
     old, base = fixture_run(tmp_path)
     write(base / "config.json", {})
+    for name in ['tokenizer_config.json', 'tokenizer.json', 'model.safetensors']:
+        (base / name).write_bytes(b'fixture')
     write(base / "model_lock.json", {"id": "Qwen", "revision": "a" * 40,
-                                     "files": {"config.json": {"sha256": sha(base / "config.json")}}})
+                                     "files": {p.name: {'sha256': sha(p)} for p in base.iterdir() if p.name != 'model_lock.json'}})
+    initial = tmp_path / 'initial'
+    write(initial / 'identity.json', {'adapter_sha256': adapter_identity(initial),
+          'model_revision': 'a'*40, 'model_lock_sha256': sha(base/'model_lock.json')})
+    for folder in (old/'training').iterdir():
+        write(folder/'checkpoint.json', {'adapter_sha256': adapter_identity(folder/'adapter'),
+              'model_id': folder.name, 'run_identity': 'original'})
     before = {str(p): sha(p) for p in old.rglob('*') if p.is_file()}
     calls = []
     def inspect(ref):
@@ -102,3 +110,30 @@ def test_inventory_rejects_modified_frozen_image_map(tmp_path):
     write(old / "environments/benchmark/task_images.json", {})
     with pytest.raises(ValueError, match="checksum"):
         inventory(old, lambda ref: {"Id": "fixture"})
+
+
+def test_base_lock_cannot_be_empty_or_config_only(tmp_path):
+    assert check_base_contents(tmp_path, {})
+    write(tmp_path/'config.json', {})
+    assert check_base_contents(tmp_path, {'config.json': {'sha256': sha(tmp_path/'config.json')}})
+
+
+def test_base_index_cannot_reference_unlocked_shards(tmp_path):
+    write(tmp_path/'model.safetensors.index.json', {'weight_map': {'layer': 'missing.safetensors'}})
+    assert 'weight index references unlocked/missing shards' in check_base_contents(tmp_path,
+        {'model.safetensors.index.json': {'sha256': sha(tmp_path/'model.safetensors.index.json')}})
+
+
+def test_inventory_blocks_missing_original_adapter_evidence(tmp_path):
+    old, _ = fixture_run(tmp_path)
+    report = inventory(old, lambda ref: {'Id': 'same'})
+    assert len([x for x in report['issues'] if 'original adapter evidence:' in x.get('reason','')]) == 5
+
+
+def test_inventory_rejects_tampered_adapter_with_valid_old_receipt(tmp_path):
+    test_inventory_reads_exact_120_tasks_and_preserves_old_evidence(tmp_path)
+    old=tmp_path/'old'
+    adapter=old/'training/low_lr1_p100/adapter/adapter_model.safetensors'
+    adapter.write_bytes(b'changed after publication')
+    report=inventory(old, lambda ref: {'Id': 'same'})
+    assert any(x.get('model')=='low_lr1_p100' and 'differs' in x.get('reason','') for x in report['issues'])
