@@ -1,6 +1,8 @@
 # 固定权重重测协议（2026-11-12）
 
-本文件确定重测研究参数，补充 HANDOFF.md 与 REEVALUATION_DEPLOYMENT.md；不修改 main.yaml、旧 snapshot 或旧结果。configs/reevaluation.yaml 为相应参数清单。清单不是完整评测执行器，字段须由后续执行器落实并通过实际验收。
+最新调用方式：Python Claude Agent SDK0.2.87，显式指定Claude程序2.1.153；SDK底层仍调用该程序。以 [SDK部署说明](reevaluation/DEPLOYMENT_SDK.md) 为当前实现和环境准备依据；下文直接CLI命令是历史方式，250 turn及其余研究预算不变。
+
+本文件确定重测研究参数，不修改 main.yaml、旧 snapshot 或旧结果。configs/reevaluation.yaml 为参数清单，scripts/run_reevaluation.py 为独立执行器；须按SDK部署说明通过服务器真实验收后运行。
 
 ## 已确定的参数
 

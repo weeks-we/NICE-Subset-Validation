@@ -1,0 +1,20 @@
+{
+  "gpu_uuids": ["GPU-REPLACE-1", "GPU-REPLACE-2", "GPU-REPLACE-3", "GPU-REPLACE-4", "GPU-REPLACE-5", "GPU-REPLACE-6", "GPU-REPLACE-7", "GPU-REPLACE-8"],
+  "vllm_image": "internal.example/nice-vllm-policy@sha256:REPLACE",
+  "sdk_image": "internal.example/nice-sdk@sha256:REPLACE",
+  "reference_python": "/existing/reference-venv/bin/python",
+  "grading_python": "/existing/source-locked-grader-venv/bin/python",
+  "docker_network": "nice-restricted",
+  "gateway_bind": "172.30.0.1",
+  "gateway_url": "http://172.30.0.1",
+  "gateway_port_start": 19000,
+  "upstream_port_start": 18000,
+  "service_start_seconds": 900,
+  "egress_policy_evidence": "/private/platform-network-policy-receipt.json",
+  "task_images": {
+    "REPLACE_WITH_EVERY_ORIGINAL_120_TASK_IDS_AND_DEVELOPMENT_ID": {
+      "image": "internal.example/original-task-sdk@sha256:REPLACE",
+      "parent_image_id": "sha256:ORIGINAL_AGENT_IMAGE_CONTENT_ID"
+    }
+  }
+}

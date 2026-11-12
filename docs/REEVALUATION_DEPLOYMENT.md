@@ -1,6 +1,8 @@
 # Claude Code评测复核：服务器部署编排
 
-本文件补充唯一实验交接 docs/HANDOFF.md 的2026-11-12条目。服务器agent负责全过程，所有准备在正式600次评测之前完成。此版本已提供配置草案、只读资源盘点和容器内网络预检；**尚未提供完整Claude Code 600次评测执行器，不能把预检PASS当成新评测已能自动执行**。后续执行器须按下述协议实现并验收，不以旧run_server.py代替，否则会进入原完整实验。
+最新接入已改为Python Claude Agent SDK；构建/复用/启动优先阅读 [SDK部署说明](reevaluation/DEPLOYMENT_SDK.md)，不要按下文历史CLI命令描述直接开跑。scripts/smoke_reevaluation.py已切换SDK，实际容器入口为/opt/nice-sdk/bin/python。
+
+本文件补充 docs/HANDOFF.md 的2026-11-12条目。最新完整SDK执行入口为 `scripts/run_reevaluation.py`，按 [SDK部署说明](reevaluation/DEPLOYMENT_SDK.md) 的preflight/run命令执行。包含八卡服务、600题调度、逐题恢复、预算监督及打包；必须经过真实服务器验收，不以旧run_server.py代替。
 
 ## 代码、旧数据与新结果
 
@@ -62,7 +64,7 @@ python scripts/prepare_reevaluation.py \
 
 ### 已提供的真实CLI/工具smoke
 
-2026-11-12增强：smoke要求至少三条assistant事件、Read/Write/Bash工具与至少三次无错误工具返回。模型先复制随机内容，随后通过Bash运行Python生成新的随机挑战，必须据此再写正确答案。记录观察到的thinking块数量，但不将其当历史thinking回传证明；它仍不是真实SWE开发题、LoRA数值、压缩或官方判分验收。当前GPU八卡调度和新协议断点恢复尚未接入执行器，旧流程的能力不能计为新流程已实现。
+smoke要求至少三条assistant事件、Read/Write/Bash及随机工具反馈。完整入口另做真实开发题、LoRA数值、容量和压缩验收；不能仅凭smoke PASS开始正式评测。
 
 Claude Code是下载并安装的程序，不是远程Claude模型；固定发行物、依赖和必要运行库在公司构建阶段装进本地任务运行层，正式计算不在线安装。新入口scripts/smoke_reevaluation.py支持在授权Linux服务器进行真实接入验收（本机只做显式mock/CPU测试）：
 

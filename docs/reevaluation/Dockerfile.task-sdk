@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# Derive only if the verified original task image does not already contain this SDK layer.
+# NEVER replace its testbed Python/conda, repository checkout or grader image.
+ARG TASK_IMAGE
+FROM ${TASK_IMAGE}
+ARG TASK_IMAGE_ID
+LABEL nice.parent_image_id=${TASK_IMAGE_ID}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash git ripgrep ca-certificates libstdc++6 libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN getent passwd 1000 >/dev/null || useradd --uid 1000 --create-home --shell /bin/bash nice-agent
+ARG SDK_PYTHON=/opt/conda/bin/python
+COPY docs/reevaluation/requirements-sdk.txt /tmp/nice-sdk-requirements.txt
+# Agent chooses an existing Python >=3.10 OUTSIDE the task's testbed interpreter.
+# Fail if unavailable; prepare an approved portable Python layer at build time instead.
+RUN "${SDK_PYTHON}" -c 'import sys; assert sys.version_info >= (3,10)' \
+    && "${SDK_PYTHON}" -m venv /opt/nice-sdk \
+    && /opt/nice-sdk/bin/python -m pip install --only-binary=:all: -r /tmp/nice-sdk-requirements.txt \
+    && /opt/nice-sdk/bin/python -m pip check
+ARG CLAUDE_SHA256
+COPY docs/reevaluation/install_sdk_runtime.py /tmp/install_sdk_runtime.py
+RUN CLAUDE_SHA256="${CLAUDE_SHA256}" /opt/nice-sdk/bin/python /tmp/install_sdk_runtime.py \
+    && /opt/nice-sdk/bin/python -m pip freeze > /opt/nice-sdk/environment-freeze.txt
+ENV DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+# Keep PATH, original entrypoint, testbed interpreter and original grader unchanged.
+# Runner must execute SDK explicitly with /opt/nice-sdk/bin/python as a non-root user.

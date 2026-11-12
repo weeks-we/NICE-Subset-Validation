@@ -3,6 +3,9 @@ schema_version: 1
 execution: server
 vllm_version: 0.22.0
 claude_code_version: 2.1.153  # Public compatibility reports; still requires real server acceptance.
+agent_interface: claude_agent_sdk
+claude_agent_sdk_version: 0.2.87
+claude_runtime_path: /opt/nice-sdk/bin/claude-pinned
 models: [initial, low_lr1_p100, low_lr2_p025, high_lr1_p050, high_lr2_p100]
 scopes: {benchmark: 100, nice_retest: 20}
 generation:
@@ -39,8 +42,9 @@ network:
   endpoint_host_is_private: null  # Determined by preflight, not assumed from DNS name.
   egress_policy_evidence: null  # Platform network policy/firewall receipt, outside Git.
 acceptance:
+  logprob_atol: 0.15  # BF16 HF/vLLM top-20 logprob absolute tolerance, frozen before benchmark.
   required_before_formal: true
-  cli_file_tool_smoke: true
+  sdk_file_tool_smoke: true
   all_five_adapter_routes: true
   verify_effective_generation_parameters: true
   verify_hf_vllm_adapter_numerics: true

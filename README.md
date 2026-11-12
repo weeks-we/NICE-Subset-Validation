@@ -1,8 +1,10 @@
 # NICE-Subset-Validation
 
+最新重测改用 Python Claude Agent SDK；环境准备、原镜像/权重复用及三份构建文件见 [SDK部署说明](docs/reevaluation/DEPLOYMENT_SDK.md)。旧训练流程与结果保留。
+
 完整服务器交接见 [HANDOFF](docs/HANDOFF.md)，配置权威为 [main.yaml](configs/main.yaml)。
 
-已完成权重的新harness评测准备见 [部署编排](docs/REEVALUATION_DEPLOYMENT.md)。原实验入口不变；新增入口仅做120题资源复用盘点和容器内网络预检，不启动训练或正式评测。
+已完成权重的新harness评测使用独立入口 `scripts/run_reevaluation.py`，具备八卡服务、验收、600题调度、恢复及打包；启动命令见 [SDK部署说明](docs/reevaluation/DEPLOYMENT_SDK.md)。旧训练入口与结果保留，正式重测须先通过服务器真实验收。
 
 公司镜像平台部署见 [构建与运行说明](docs/DEPLOYMENT.md)、[Dockerfile](docs/Dockerfile) 和 [发给服务器 agent 的简短 prompt](docs/SERVER_AGENT_PROMPT.md)。
 
