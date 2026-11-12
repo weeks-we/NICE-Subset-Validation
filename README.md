@@ -2,6 +2,8 @@
 
 完整服务器交接见 [HANDOFF](docs/HANDOFF.md)，配置权威为 [main.yaml](configs/main.yaml)。
 
+已完成权重的新harness评测准备见 [部署编排](docs/REEVALUATION_DEPLOYMENT.md)。原实验入口不变；新增入口仅做120题资源复用盘点和容器内网络预检，不启动训练或正式评测。
+
 公司镜像平台部署见 [构建与运行说明](docs/DEPLOYMENT.md)、[Dockerfile](docs/Dockerfile) 和 [发给服务器 agent 的简短 prompt](docs/SERVER_AGENT_PROMPT.md)。
 
 | 项目 | 当前设计 |

@@ -1,7 +1,13 @@
-# 发给师兄的 agent
+﻿# 给服务器 agent：辅助原实验恢复
 
-请先读 AGENTS.md、docs/HANDOFF.md、docs/DEPLOYMENT.md。你负责从前置环境核验、镜像构建/装载到实验执行、恢复和最终汇报的全流程；公司内部地址、平台参数、挂载和 GPU UUID 请按实际情况配置，普通工程问题自行处理并记录。
+请阅读本文件及随附 DEPLOYMENT.md、Dockerfile。这三份文件只辅助修复环境、继续原实验，不要求更新原实验仓库、新建实验或采用新入口。研究规则以服务器原运行的冻结配置、原源码和原交接为准，不用新仓库默认配置覆盖旧配置。
 
-先盘点已完成内容，优先复用核验过的模型、原始数据和任务镜像，不重新抽题、不重复下载已有资源。当前 r4 已有 NICE160，后续 selection 环境准备报 Stale file handle，请先修存储并判断能否在原身份下恢复；不要默认重跑前置步骤。若应用新源码/环境导致身份变化，不改旧 snapshot 或搬旧结果冒充续跑，保留证据并说明需要新运行。
+你负责前置排查、必要镜像构建、资源补齐、恢复、监控及汇报。公司基础镜像、内部仓库、挂载和 GPU UUID 按平台配置，普通工程问题自主处理并留日志；数据划分、模型/初始adapter、NICE、学习率、batch、训练节点、评测预算及GPU分工保持原冻结设置。
 
-运行环境参考 docs/Dockerfile，在构建阶段装好固定依赖；按 docs/DEPLOYMENT.md 用 scripts/prepare_task_images.py 制备、发布、内网装载并核验 221 道冻结任务的 Agent/grader 镜像。正式计算使用 preinstalled/offline 配置，缺资源先报告，不临时到外网安装或补镜像。验证 Docker SDK/CLI 使用同一 daemon，挂载路径一致，完成必要真实验收后继续 HANDOFF 的实验。所有研究参数保持不变。最后返回环境/镜像核验情况、实际恢复进度，完成后交付 results zip 和 completion.json；不要 commit/push。
+2026-11-08 20:11 的 r4 中间包记录：NICE160已完成并有核验回执，随后 prepare-environments:selection 因 Stale file handle 退出，尚无正式候选评分和训练完成证据。这只是当时状态，请先检查最新状态。保留原代码、环境、配置、storage和结果，检查活跃控制器/worker并修复存储；不重新抽题，不重复下载已有资源，不重跑已完成且核验通过的阶段。
+
+原环境可用时使用原命令和原恢复机制。确需新镜像时，依据原已验证环境制备；Dockerfile是模板，不含实验代码，不要求拉新仓库。运行镜像按Dockerfile完整安装系统及Python依赖，精确版本和CUDA内核来源由原验证环境提供；任务环境只补缺项，不重做已有正式计算。恢复前比较原程序要求的源码、数值依赖、官方harness来源、配置、模型/adapter及任务证据。Docker SDK、CLI和grader连接同一个daemon，挂载绝对路径保持原配置。
+
+不要启用新仓库的preinstalled/offline配置，不用新storage/reuse-from命令代替原作业恢复，不编辑旧snapshot、stage状态或checksum绕过检查。新环境不兼容时保留原成果，报告具体差异及修复办法，不自行从头启动实验。
+
+先简报故障原因、资源复用情况及确切恢复阶段，修复后持续推进剩余实验。记录命令、环境/镜像版本及日志，完成后按原交接返回results zip和completion.json。不要commit/push。

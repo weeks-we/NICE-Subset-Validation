@@ -1,5 +1,15 @@
 # 师兄 A：Verified NICE / SWE-smith 选权重实验交接
 
+## 2026-11-12 补充：固定权重的新 harness 评测准备
+
+本次重测确定配置及官方依据见 [REEVALUATION_PROTOCOL](REEVALUATION_PROTOCOL.md)：vLLM 0.22.0 + Claude Code 2.1.153；服务器只填写并核验机器路径、端点和镜像等部署事实。下面历史原实验指令不适用于本次仅重测任务；不得重训或重选权重。
+
+用户已授权：不重训、不重算 NICE、不重选 checkpoint；新增 Claude Code + vLLM 的评测复核，原实验定义及结果保留。本节只覆盖新的评测部署准备，不恢复或修改旧 run 身份。详细部署编排见 [REEVALUATION_DEPLOYMENT](REEVALUATION_DEPLOYMENT.md)，配置草案为 configs/reevaluation.yaml，资源/容器网络预检入口为 scripts/prepare_reevaluation.py。该入口目前只执行资源盘点和网络探测，不是600次评测执行器，不会误启动旧完整训练流水线。
+
+服务器 agent 先复用原120题环境、模型与已选adapter，核验后只补缺项。原来的 docs/SERVER_AGENT_PROMPT.md 和 docs/DEPLOYMENT.md 是此前“恢复旧实验”的辅助文件，不作为这次新评测的启动指令。新配置下的NICE20题复测采用采样，不标为greedy；与100题benchmark分开报告。不得拿旧18分作新协议initial基线。
+
+真实CLI/文件工具接入验收入口已补充为 scripts/smoke_reevaluation.py，必须在授权服务器用已制备的CLI镜像执行；失败退出并留status/log。完整评测前仍须通过LoRA数值与路由、实际生成参数、262K容量、真实开发题官方判分及预算恢复验收，详见部署编排第四节。CLI smoke不代表这些项目自动通过；600次正式执行器仍未接入。
+
 本文件取代此前 A/B 交接。当前只有根项目，运行 `scripts/run_server.py`；B 目录已移除。`configs/legacy.yaml` 与 development.yaml 只保留历史工程回归，不能用于这次正式实验。
 
 公司内网预构建部署另见 [DEPLOYMENT](DEPLOYMENT.md)、[Dockerfile](Dockerfile) 和 [服务器 agent 简短 prompt](SERVER_AGENT_PROMPT.md)。已完成阶段先核验，不盲目重跑；预构建部署不能绕过旧运行的源码/环境身份校验。
