@@ -173,16 +173,21 @@ def jobs_for(models, scopes):
     return jobs
 
 
-def schedule(journal, jobs, backends, retries=2, pipeline=False):
-    """One sequential task stream per inference service, no accidental extra slots."""
+def schedule(journal, jobs, backends, retries=2, pipeline=False, slots_per_service=1):
+    """Bound agent concurrency per service and overlap independent official grading."""
     if not backends:
         raise ValueError('No inference services')
     import queue
+    if type(slots_per_service) is not int or slots_per_service<1:
+        raise ValueError('Positive integer slots_per_service required')
+    if slots_per_service!=1 and not pipeline:
+        raise ValueError('Multiple service slots require the bounded pipeline')
     if pipeline:
         # Release an inference slot as soon as its patch is saved; grading can
         # overlap the next episode. Bound both GPU slots and grading concurrency.
         available=queue.Queue()
-        for backend in backends:available.put(backend)
+        for backend in backends:
+            for _ in range(slots_per_service):available.put(backend)
         grading=threading.Semaphore(len(backends))
         class PooledBackend:
             def agent(self,job,attempt):
@@ -191,7 +196,7 @@ def schedule(journal, jobs, backends, retries=2, pipeline=False):
                 finally:available.put(backend)
             def grade(self,job,patch,attempt):
                 with grading:return backends[0].grade(job,patch,attempt)
-        workers=[PooledBackend() for _ in range(2*len(backends))]
+        workers=[PooledBackend() for _ in range((slots_per_service+1)*len(backends))]
     else:
         workers=backends
     queue_ = queue.Queue()

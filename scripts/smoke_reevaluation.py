@@ -21,8 +21,8 @@ if expected_version != CLI_VERSION:raise RuntimeError('Unexpected Claude runtime
 with tempfile.TemporaryDirectory(prefix='nice-cli-smoke-') as directory:
     root=pathlib.Path(directory)
     nonce=secrets.token_hex(24)
-    (root/'source.txt').write_text(nonce)
-    (root/'verify.py').write_text("import pathlib,secrets\nr=pathlib.Path('.')\nassert (r/'proof.txt').read_text()==(r/'source.txt').read_text()\np=secrets.token_hex(24)\n(r/'challenge.txt').write_text(p)\nprint('NEXT_CHALLENGE='+p)\n")
+    (root/'source.txt').write_text(nonce+'\n')
+    (root/'verify.py').write_text("import pathlib,secrets\nr=pathlib.Path('.')\nassert (r/'proof.txt').read_text()==(r/'source.txt').read_text()\np=secrets.token_hex(24)\n(r/'challenge.txt').write_text(p+'\\n')\nprint('NEXT_CHALLENGE='+p)\n")
     env=dict(os.environ,HOME=str(root/'home'),CLAUDE_CONFIG_DIR=str(root/'home/.claude'))
     pathlib.Path(env['HOME']).mkdir()
     prompt='Complete these steps in order, waiting for each tool result. First read source.txt with Read. Next create proof.txt with Write containing exactly that content. Next use Bash to execute python verify.py. It verifies your file and generates a NEW random challenge that does not exist before execution. Finally use Write to create answer.txt containing exactly the NEXT_CHALLENGE value returned by Bash. Do not use Bash to write answer.txt. Do not ask questions. Finish after writing answer.txt. This is an integration check, not a benchmark.'
@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='nice-cli-smoke-') as directory:
     passed=(receipt['assistant_rounds']>=3 and {'Read','Write','Bash'}.issubset({c['name'] for c in tool_calls})
         and len(tool_results)>=3 and not any(b.get('is_error') for b in tool_results)
         and {c['id'] for c in tool_calls}.issubset({b['tool_use_id'] for b in tool_results})
-        and challenge_ok and (root/'proof.txt').is_file() and (root/'proof.txt').read_text()==nonce)
+        and challenge_ok and (root/'proof.txt').is_file() and (root/'proof.txt').read_text()==nonce+'\n')
     print(json.dumps({**receipt,'status':'PASS' if passed else 'FAIL',
         'tool_result_count':len(tool_results),'challenge_verified':bool(challenge_ok)}))
     if not passed:sys.exit(1)

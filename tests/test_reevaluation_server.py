@@ -90,6 +90,18 @@ def test_capacity_requires_actual_full_length_not_just_server_configuration(monk
         acceptance.capacity('http://private',cfg,3)
 
 
+def test_capacity_distinct_prefixes_do_not_share_entire_kv_cache(monkeypatch):
+    cfg=yaml.safe_load(Path('configs/reevaluation.yaml').read_text(encoding='utf-8'))
+    prefixes=[]
+    def request(url,body,**kwargs):
+        assert len(body['prompt'])==229376 and body['prompt'][1:]==[3]*229375
+        prefixes.append(body['prompt'][0])
+        return {'usage':{'prompt_tokens':229376,'completion_tokens':32768}}
+    monkeypatch.setattr(acceptance,'http_json',request)
+    for prefix in [10,11,12,13]:acceptance.capacity('http://private',cfg,3,prefix)
+    assert len(set(prefixes))==4
+
+
 def test_orphan_cleanup_filters_this_output_root_and_never_prunes(monkeypatch,tmp_path):
     import sys
     removed=[]

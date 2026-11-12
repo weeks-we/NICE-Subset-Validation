@@ -96,12 +96,34 @@ def test_pipeline_never_double_books_inference_and_grading_overlaps(tmp_path):
     assert shared['max']==1 and shared['overlap']
 
 
+@pytest.mark.parametrize('slots',[2,4])
+def test_multi_slot_pipeline_reaches_bound_without_crossing_it(tmp_path,slots):
+    import time
+    state={'active':0,'peak':0}
+    mutex=threading.Lock()
+    barrier=threading.Barrier(slots)
+    class Backend(MockBackend):
+        def agent(self,*args):
+            with mutex:
+                state['active']+=1;state['peak']=max(state['peak'],state['active'])
+            barrier.wait(timeout=10)
+            time.sleep(.01)
+            result=super().agent(*args)
+            with mutex:state['active']-=1
+            return result
+    journal=Journal(tmp_path,{'synthetic':True})
+    jobs=jobs_for(['initial'],{'benchmark':[{'instance_id':str(i)} for i in range(slots*2)]})
+    schedule(journal,jobs,[Backend()],pipeline=True,slots_per_service=slots)
+    assert state['peak']==slots and state['active']==0
+
+
 def test_full_600_mock_parallel_serial_resume_reports(tmp_path,cfg):
     scopes={s:[{'instance_id':f'{s}-{i}'} for i in range(n)] for s,n in cfg['scopes'].items()}
     jobs=jobs_for(cfg['models'],scopes)
     assert len(jobs)==600
     parallel=Journal(tmp_path/'parallel',{'synthetic':True,'config':cfg})
-    schedule(parallel,jobs,[MockBackend() for _ in range(8)])
+    schedule(parallel,jobs,[MockBackend() for _ in range(8)],pipeline=True,
+             slots_per_service=cfg['resources']['slots_per_service'])
     hashes={str(p):checksum(p) for p in (parallel.root/'episodes').rglob('*') if p.is_file()}
     schedule(parallel,jobs,[MockBackend()])
     assert hashes=={str(p):checksum(p) for p in (parallel.root/'episodes').rglob('*') if p.is_file()}
@@ -158,7 +180,7 @@ def test_gateway_stream_usage_forced_settings_and_route_isolation(tmp_path,cfg):
     gateway=Gateway(('127.0.0.1',0),'http://127.0.0.1:'+str(upstream.server_port),cfg).start()
     token,budget=gateway.register('initial',tmp_path/'budget.json')
     def post(model,key=token):
-        req=urllib.request.Request('http://127.0.0.1:'+str(gateway.server.server_port)+'/v1/messages',
+        req=urllib.request.Request('http://127.0.0.1:'+str(gateway.server.server_port)+'/v1/messages?beta=true',
             data=json.dumps({'model':model,'messages':[],'stream':True,'max_tokens':100,'temperature':0}).encode(),
             headers={'x-api-key':key})
         with urllib.request.urlopen(req,timeout=5) as response:return response.read()

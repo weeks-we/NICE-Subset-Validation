@@ -30,8 +30,8 @@ def validate(cfg):
         for field in fields:
             if type(cfg[section][field]) is not int or cfg[section][field]<=0:
                 raise ValueError('Positive integer required: '+field)
-    if cfg['agent']['max_turns']!=250 or cfg['resources']['slots_per_service']!=1:
-        raise ValueError('Keep 250 turns and one task slot per inference service')
+    if cfg['agent']['max_turns']!=250 or cfg['resources']['slots_per_service'] not in {1,2,4,8,16}:
+        raise ValueError('Keep 250 turns and use a pre-frozen 1/2/4/8/16 service slot count')
     if cfg['generation']['max_new_tokens']>=cfg['generation']['context_length']:
         raise ValueError('Output reserve must leave room for input')
     if cfg['agent']['model_failure_retries']!=0 or cfg['agent']['infrastructure_retries']!=2:
@@ -139,7 +139,8 @@ def main():
             frozen={'synthetic':True,'config':cfg,'source':source_identity(),'scopes':scopes}
             journal=Journal(args.output,frozen)
             jobs=jobs_for(cfg['models'],scopes)
-            if args.action!='report':schedule(journal,jobs,[MockBackend() for _ in range(8)])
+            if args.action!='report':schedule(journal,jobs,[MockBackend() for _ in range(8)],
+                pipeline=True,slots_per_service=cfg['resources']['slots_per_service'])
             if args.action!='preflight':report(journal,jobs)
             print('SYNTHETIC ONLY: '+str(len(jobs))+' episodes; no real model results')
             return
@@ -182,7 +183,8 @@ def main():
                 save(gate,{'status':'PASS','run_id':journal.run_id,
                     'artifacts':{str(p.relative_to(gate.parent)):checksum(p) for p in acceptance_root.rglob('*') if p.is_file()}})
             if args.action=='run':
-                schedule(journal,jobs,backends,cfg['agent']['infrastructure_retries'],pipeline=True)
+                schedule(journal,jobs,backends,cfg['agent']['infrastructure_retries'],pipeline=True,
+                         slots_per_service=cfg['resources']['slots_per_service'])
                 report(journal,jobs)
         print('Acceptance complete'+('; 600 episodes packaged' if args.action=='run' else '; no formal task executed'))
 

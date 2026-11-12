@@ -11,6 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit, parse_qs
 from .reevaluation_runtime import save
 
 
@@ -104,6 +105,10 @@ class Gateway:
                 except Exception:
                     self.send_error(503)
             def do_POST(self):
+                route=urlsplit(self.path)
+                if route.query and parse_qs(route.query,keep_blank_values=True)!={'beta':['true']}:
+                    self.send_error(400); return
+                self.path=route.path
                 key = self.headers.get('x-api-key') or self.headers.get('Authorization','').removeprefix('Bearer ')
                 budget = owner.sessions.get(key)
                 if not budget:

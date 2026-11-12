@@ -48,9 +48,11 @@ def numerics(upstream, reference, cfg):
     return errors
 
 
-def capacity(upstream,cfg,token_id):
+def capacity(upstream,cfg,token_id,prefix_token=None):
     g=cfg['generation']; count=g['context_length']-g['max_new_tokens']
-    result = http_json(upstream+'/v1/completions',{'model':'initial','prompt':[token_id]*count,
+    prompt=[token_id]*count
+    if prefix_token is not None:prompt[0]=prefix_token
+    result = http_json(upstream+'/v1/completions',{'model':'initial','prompt':prompt,
         'max_tokens':g['max_new_tokens'],'temperature':0,'ignore_eos':True,
         'add_special_tokens':False},timeout=cfg['agent']['wall_seconds'])
     usage=result['usage']
@@ -61,7 +63,11 @@ def capacity(upstream,cfg,token_id):
 
 def accept(cfg,dep,inv,services,backends,reference,root,run_id):
     root=Path(root); root.mkdir(parents=True,exist_ok=True)
-    with gzip.open(reference,'rt',encoding='utf-8') as f:token_id=json.load(f)[0]['prompt_ids'][-1]
+    with gzip.open(reference,'rt',encoding='utf-8') as f:reference_rows=json.load(f)
+    token_id=reference_rows[0]['prompt_ids'][-1]
+    prefixes=sorted({token for row in reference_rows for token in row['prompt_ids']})
+    if len(prefixes)<cfg['resources']['slots_per_service']:
+        raise InfrastructureError('Not enough distinct valid tokens for independent-prefix capacity tests')
     from .reevaluation_deploy import probe_network
     save(root/'network.json',probe_network(dep['sdk_image'],dep['docker_network'],
         dep['gateway_url'].rstrip('/')+':'+str(dep['gateway_port_start'])))
@@ -79,8 +85,14 @@ def accept(cfg,dep,inv,services,backends,reference,root,run_id):
     with ThreadPoolExecutor(max_workers=8) as pool:
         save(root/'task-runtimes.json',list(pool.map(image_probe,images)))
     def per_service(index):
+        slots=cfg['resources']['slots_per_service']
         result={'numerics':numerics(services.upstreams[index],reference,cfg),
-                'capacity':capacity(services.upstreams[index],cfg,token_id),'sdk_routes':[]}
+                'slots_per_service':slots,'sdk_routes':[]}
+        # Each admitted agent must fit at the full configured window simultaneously.
+        # Do not accept a short-context throughput test as long-context capacity proof.
+        with ThreadPoolExecutor(max_workers=slots) as capacity_pool:
+            result['capacity']=list(capacity_pool.map(
+                lambda slot:capacity(services.upstreams[index],cfg,token_id,prefixes[slot]),range(slots)))
         # Actual tool feedback, all aliases, not a /models name-only check.
         from scripts.smoke_reevaluation import smoke_command
         for model in cfg['models']:

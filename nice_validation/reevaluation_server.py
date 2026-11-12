@@ -76,6 +76,8 @@ class Services:
             args = ['--model','/model','--served-model-name','base_reference',
                 '--tokenizer','/model','--dtype','bfloat16','--max-model-len',str(cfg['generation']['context_length']),
                 '--tensor-parallel-size',str(tp),'--gpu-memory-utilization','0.90',
+                '--max-num-seqs',str(cfg['resources']['slots_per_service']),
+                '--enable-chunked-prefill','--max-num-batched-tokens','8192',
                 '--enable-lora','--max-lora-rank','16','--max-loras','8','--max-cpu-loras','8',
                 '--enable-auto-tool-choice','--tool-call-parser','qwen3_coder',
                 '--reasoning-parser','qwen3','--port','8000','--lora-modules']

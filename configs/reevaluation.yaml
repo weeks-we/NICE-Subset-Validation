@@ -35,7 +35,7 @@ agent:
 resources:
   gpu_count: 8
   tensor_parallel_size: 1
-  slots_per_service: 1
+  slots_per_service: 4  # 32 simultaneous agent episodes on eight TP1 services; gated at full context.
 network:
   endpoint: null  # Actual container-reachable Anthropic-compatible root URL.
   docker_network: null  # Existing dedicated network, NOT host/none/default bridge.
