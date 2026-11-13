@@ -8,6 +8,7 @@ import queue
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -48,7 +49,7 @@ class Services:
             self._start()
             return self
         except BaseException:
-            self.__exit__(None,None,None)
+            self.__exit__(*sys.exc_info())
             raise
 
     def _start(self):
@@ -121,14 +122,22 @@ class Services:
             self.gateways.append(gateway)
 
     def __exit__(self, *unused):
+        errors=[]
         for gateway in self.gateways:
-            gateway.close()
+            try:gateway.close()
+            except Exception as exc:errors.append(str(exc))
         for container in self.names:
             try:
                 log = container.logs().decode(errors='replace')
                 (self.root/(container.name+'.log')).write_text(log,encoding='utf-8')
+            except Exception as exc:errors.append(str(exc))
             finally:
-                container.remove(force=True)
+                try:container.remove(force=True)
+                except Exception as exc:errors.append(str(exc))
+        try:self.client.close()
+        except Exception as exc:errors.append(str(exc))
+        if errors and not (unused and unused[0]):
+            raise InfrastructureError('Service cleanup errors: '+'; '.join(errors))
 
 
 class ServerBackend:

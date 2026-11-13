@@ -90,6 +90,17 @@ def test_capacity_requires_actual_full_length_not_just_server_configuration(monk
         acceptance.capacity('http://private',cfg,3)
 
 
+def test_numerics_rejects_nan_instead_of_passing_tolerance(monkeypatch,tmp_path):
+    cfg=yaml.safe_load(Path('configs/reevaluation.yaml').read_text(encoding='utf-8'))
+    reference=tmp_path/'reference.gz'
+    with gzip.open(reference,'wt',encoding='utf-8') as f:
+        json.dump([{'model':'initial','prompt_ids':[1],'logprobs':[0.0]*20}],f)
+    monkeypatch.setattr(acceptance,'http_json',lambda *a,**kw:{'choices':[{
+        'logprobs':{'top_logprobs':[{f'token_id:{i}':float('nan') for i in range(20)}]}}]})
+    with pytest.raises(InfrastructureError,match='Non-finite'):
+        acceptance.numerics('http://private',reference,cfg)
+
+
 def test_capacity_distinct_prefixes_do_not_share_entire_kv_cache(monkeypatch):
     cfg=yaml.safe_load(Path('configs/reevaluation.yaml').read_text(encoding='utf-8'))
     prefixes=[]
@@ -122,3 +133,28 @@ def test_orphan_cleanup_filters_this_output_root_and_never_prunes(monkeypatch,tm
     container.name='unrelated-service'
     with pytest.raises(ValueError,match='Unexpected'):server.cleanup_orphans(tmp_path)
     assert len(removed)==1
+
+
+def test_service_cleanup_continues_after_one_container_fails(tmp_path):
+    removed=[]
+    class Container:
+        def __init__(self,name):self.name=name
+        def logs(self):raise RuntimeError('log collection failed')
+        def remove(self,**kw):removed.append(self.name)
+    service=server.Services({}, {}, {}, tmp_path)
+    service.names=[Container('one'),Container('two')]
+    service.client=SimpleNamespace(close=lambda:removed.append('client'))
+    with pytest.raises(InfrastructureError,match='cleanup'):
+        service.__exit__(None,None,None)
+    assert removed==['one','two','client']
+
+
+def test_required_gates_and_tp_fail_before_resource_access():
+    from scripts.run_reevaluation import validate
+    from copy import deepcopy
+    cfg=yaml.safe_load(Path('configs/reevaluation.yaml').read_text(encoding='utf-8'))
+    validate(cfg)
+    bad=deepcopy(cfg);bad['acceptance']['sdk_file_tool_smoke']=False
+    with pytest.raises(ValueError,match='cannot be disabled'):validate(bad)
+    bad=deepcopy(cfg);bad['resources']['tensor_parallel_size']=3
+    with pytest.raises(ValueError,match='TP1/TP2'):validate(bad)

@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import gzip
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -19,8 +20,15 @@ def hf_reference(cfg, dep, inv, root):
     output = root/'hf_reference.json.gz'
     env = dict(os.environ,CUDA_VISIBLE_DEVICES=dep['gpu_uuids'][0],NICE_EXECUTION='server',
                HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_DATASETS_OFFLINE='1')
-    result = command([dep['reference_python'],str(Path(__file__).resolve().parents[1]/'scripts/reevaluation_hf_reference.py'),
-                      str(request.resolve()),str(output.resolve())],timeout=900,env=env)
+    try:
+        result = command([dep['reference_python'],str(Path(__file__).resolve().parents[1]/'scripts/reevaluation_hf_reference.py'),
+                          str(request.resolve()),str(output.resolve())],timeout=900,env=env)
+    except InfrastructureError as exc:
+        for stream in ['stdout','stderr']:
+            value=getattr(exc.__cause__,stream,'') or ''
+            if isinstance(value,bytes):value=value.decode(errors='replace')
+            (root/('hf.'+stream+'.log')).write_text(value,encoding='utf-8')
+        raise
     (root/'hf.stdout.log').write_text(result.stdout,encoding='utf-8')
     (root/'hf.stderr.log').write_text(result.stderr,encoding='utf-8')
     return output
@@ -39,7 +47,12 @@ def numerics(upstream, reference, cfg):
             if not token.startswith('token_id:'):
                 raise InfrastructureError('vLLM did not return exact token IDs for numerical acceptance')
             index = int(token.split(':')[1])
-            diffs.append(abs(row['logprobs'][index]-value))
+            if not 0<=index<len(row['logprobs']):
+                raise InfrastructureError('Numerical acceptance returned an invalid token index')
+            expected=row['logprobs'][index]
+            if not math.isfinite(expected) or not math.isfinite(value):
+                raise InfrastructureError('Non-finite HF/vLLM numerical acceptance value')
+            diffs.append(abs(expected-value))
         if len(diffs)<20 or max(diffs)>cfg['acceptance']['logprob_atol']:
             raise InfrastructureError('HF/vLLM adapter numerical comparison failed: '+row['model'])
         errors.append({'model':row['model'],'max_abs_logprob_error':max(diffs),'tokens':len(diffs)})

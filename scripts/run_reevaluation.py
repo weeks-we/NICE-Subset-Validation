@@ -38,6 +38,13 @@ def validate(cfg):
         raise ValueError('Keep zero model retries and at most two infrastructure retries')
     if not 0<cfg['acceptance']['logprob_atol']<=0.2:
         raise ValueError('Numerical tolerance must be frozen before any formal task')
+    if cfg['resources']['tensor_parallel_size'] not in {1,2} or cfg['resources']['gpu_count']%cfg['resources']['tensor_parallel_size']:
+        raise ValueError('GPU count must be divisible by pre-frozen TP1/TP2')
+    for name in ['required_before_formal','sdk_file_tool_smoke','all_five_adapter_routes',
+                 'verify_effective_generation_parameters','verify_hf_vllm_adapter_numerics',
+                 'verify_context_and_output_capacity','official_development_task_grade','stop_on_failure']:
+        if cfg['acceptance'].get(name) is not True:
+            raise ValueError('Required acceptance gate cannot be disabled: '+name)
 
 
 def source_identity():
@@ -155,6 +162,8 @@ def main():
         if len(jobs)!=600:raise ValueError('Formal workload must be exactly 600 episodes')
         if args.action=='report':report(journal,jobs);return
         if args.action=='run' and all(journal.completed(job) is not None for job in jobs):
+            from nice_validation.reevaluation_server import cleanup_orphans
+            cleanup_orphans(args.output)
             report(journal,jobs)
             print('All 600 episodes already complete; verified without starting GPU services')
             return
@@ -166,10 +175,16 @@ def main():
             receipt=load(gate)
             reuse=receipt.get('status')=='PASS' and receipt.get('run_id')==journal.run_id
             if not reuse:raise ValueError('Acceptance belongs to a different frozen run')
+            if not isinstance(receipt.get('artifacts'),dict) or not receipt['artifacts']:
+                raise ValueError('Acceptance requires actual nonempty probe evidence')
             for name,sha in receipt['artifacts'].items():
-                if checksum(gate.parent/name)!=sha:raise ValueError('Acceptance artifact changed')
+                artifact=(gate.parent/name).resolve()
+                if not artifact.is_relative_to(args.output.resolve()) or checksum(artifact)!=sha:
+                    raise ValueError('Acceptance artifact changed or escapes output root')
         cleanup_orphans(args.output)
-        reference=None if reuse else hf_reference(cfg,dep,inv,args.output/'reference')
+        count=len(list(args.output.glob('acceptance-attempt-*')))
+        acceptance_root=args.output/f'acceptance-attempt-{count:03d}'
+        reference=None if reuse else hf_reference(cfg,dep,inv,acceptance_root/'reference')
         tasks={(scope,t['instance_id']):t for scope,ts in scopes.items() for t in ts}
         tasks[('development',dep['development_task']['instance_id'])]=dep['development_task']
         with Services(cfg,dep,inv,args.output) as services:
@@ -177,8 +192,6 @@ def main():
                       for index,gateway in enumerate(services.gateways)]
             if not reuse:
                 # Preserve failed acceptance evidence; next attempt gets its own directory.
-                count=len(list(args.output.glob('acceptance-attempt-*')))
-                acceptance_root=args.output/f'acceptance-attempt-{count:03d}'
                 accept(cfg,dep,inv,services,backends,reference,acceptance_root,journal.run_id)
                 save(gate,{'status':'PASS','run_id':journal.run_id,
                     'artifacts':{str(p.relative_to(gate.parent)):checksum(p) for p in acceptance_root.rglob('*') if p.is_file()}})
